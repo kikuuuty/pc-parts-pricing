@@ -36,7 +36,10 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
         serviceBindings: { CATALOG: async request => {
           catalogCalls++;
           if (new URL(request.url).pathname.endsWith('/resolve')) {
-            const input = await request.json() as { products: { upstream_key: string }[] };
+            const input = await request.json() as { products: { source: string; upstream_key: string }[] };
+            // The real Catalog rejects Queue metadata in a durable reference.
+            if (input.products.some(p => Object.keys(p).sort().join(',') !== 'source,upstream_key'))
+              return MFResponse.json({ error: 'INVALID_REQUEST' }, { status: 400 });
             const n = Number(input.products[0].upstream_key.split('-')[1]);
             return MFResponse.json({ products: [{ ...ref(n), id: n, active: true, status: 'active' }] });
           }

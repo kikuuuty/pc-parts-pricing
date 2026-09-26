@@ -9,8 +9,10 @@ export class CatalogClient implements Catalog {
   async identifiers(ref: ProductRef): Promise<Identifier[] | null> {
     // Numeric ID lives only between resolve and detail. The durable pair must
     // match again after detail (a catalog rebuild can race these two requests).
+    // Queue messages structurally extend ProductRef; never forward their metadata.
+    const productRef = { source: ref.source, upstream_key: ref.upstream_key };
     const resolved = await this.request('/v1/products/resolve', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ products: [ref] }) });
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ products: [productRef] }) });
     if (!object(resolved) || !Array.isArray(resolved.products) || resolved.products.length !== 1)
       throw new RefreshError('catalog_invalid');
     const product = resolved.products[0];

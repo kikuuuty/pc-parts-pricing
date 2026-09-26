@@ -1,40 +1,61 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "pc-parts-pricing",
-  "main": "src/worker.ts",
-  "compatibility_date": "2026-09-26",
-  "workers_dev": false,
-  "preview_urls": false,
-  "routes": [],
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "pc-parts-pricing",
-    "database_id": "00000000-0000-0000-0000-000000000000",
-    "migrations_dir": "migrations"
-  }],
-  "services": [{ "binding": "CATALOG", "service": "pc-parts-catalog" }],
-  "queues": {
-    "producers": [{ "binding": "REFRESH_QUEUE", "queue": "pc-parts-pricing-refresh" }],
-    "consumers": [{
-      "queue": "pc-parts-pricing-refresh",
-      "max_batch_size": 1,
-      "max_batch_timeout": 5,
-      "max_concurrency": 1,
-      "max_retries": 3,
-      "retry_delay": 180,
-      "dead_letter_queue": "pc-parts-pricing-dead-letter"
-    }]
-  },
-  "triggers": { "crons": ["*/15 * * * *"] },
-  "vars": {
-    "YAHOO_SUMMARY_TTL_SECONDS": "21600",
-    "MAX_STALE_SECONDS": "604800",
-    "CRON_BATCH_SIZE": "4",
-    "WARMUP_BATCH_SIZE": "1",
-    "QUEUE_DAILY_LIMIT": "1000",
-    "YAHOO_DAILY_LIMIT": "1500",
-    "YAHOO_MINUTE_LIMIT": "30",
-    "YAHOO_PACING_MS": "1000"
-  },
-  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "pc-parts-pricing",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-09-26",
+	"workers_dev": false,
+	"preview_urls": false,
+	"routes": [],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "pc-parts-pricing",
+			"database_id": "a5d4eae0-1e31-49c0-a052-78e30b486273",
+			"migrations_dir": "migrations"
+		}
+	],
+	"services": [
+		{
+			"binding": "CATALOG",
+			"service": "pc-parts-catalog"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "REFRESH_QUEUE",
+				"queue": "pc-parts-pricing-refresh"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "pc-parts-pricing-refresh",
+				"max_batch_size": 1,
+				"max_batch_timeout": 5,
+				"max_concurrency": 1,
+				"max_retries": 3,
+				"retry_delay": 180,
+				"dead_letter_queue": "pc-parts-pricing-dead-letter"
+			}
+		]
+	},
+	"triggers": {
+		"crons": [
+			"*/15 * * * *"
+		]
+	},
+	"vars": {
+		"YAHOO_SUMMARY_TTL_SECONDS": "21600",
+		"MAX_STALE_SECONDS": "604800",
+		"CRON_BATCH_SIZE": "4",
+		"WARMUP_BATCH_SIZE": "1",
+		"QUEUE_DAILY_LIMIT": "1000",
+		"YAHOO_DAILY_LIMIT": "1500",
+		"YAHOO_MINUTE_LIMIT": "30",
+		"YAHOO_PACING_MS": "1000"
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 0.1
+	}
 }

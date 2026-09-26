@@ -25,6 +25,14 @@ test('catalog resolves durable reference then loads canonical identifiers via Se
   assert(!h.calls.some(c => c.url.includes('offers')));
 });
 
+test('catalog resolve projects a Queue message onto the durable reference contract', async () => {
+  const h = client([resolved(), detail()]);
+  const message = { ...ref(), provider: 'yahoo' as const, reason: 'user_request' as const,
+    token: '00000000-0000-4000-8000-000000000001' };
+  await h.api.identifiers(message);
+  assert.deepEqual(JSON.parse(String(h.calls[0].init?.body)), { products: [ref()] });
+});
+
 test('catalog missing/inactive never trigger detail or price search', async () => {
   for (const status of ['missing', 'inactive']) {
     const h = client([resolved({ status, active: false })]);
