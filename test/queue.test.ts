@@ -70,7 +70,7 @@ test('D1 commit failure is retried; successful Provider result reused without an
   h.fail(/SET status=/);
   await assert.rejects(consumer.process(h.messages[0]), (e: RefreshError) => e.reason === 'storage');
   assert.equal(h.row().status, 'pending'); assert(h.row().run_token);
-  h.advance(180000); await consumer.process(h.messages[0]);
+  h.advance(360000); await consumer.process(h.messages[0]);
   assert.equal(h.row().status, 'complete'); assert.equal(fetches, 1);
 });
 

@@ -22,6 +22,7 @@ export const body = (hits: unknown[] = [hit()]) => ({ totalResultsAvailable: hit
 export function harness(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new NodeURL('../migrations/0001_pricing.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new NodeURL('../migrations/0002_demand_warmup.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   const statements: string[] = [], logs: Event[] = [], messages: RefreshMessage[] = [];
   let time = 100 * DAY, failSql: RegExp | null = null;
@@ -32,12 +33,19 @@ export function harness(t: TestContext) {
   };
   const db = { prepare(sql: string) {
     const statement = (values: SQLInputValue[]) => ({
+      __sql: sql, __values: values,
       bind: (...params: SQLInputValue[]) => statement(params),
       all: async () => ({ results: execute(sql, values), success: true }),
       first: async () => execute(sql, values)[0] ?? null,
       run: async () => ({ results: execute(sql, values), success: true }),
     });
     return statement([]);
+  }, async batch(statements: { __sql: string; __values: SQLInputValue[] }[]) {
+    sqlite.exec('BEGIN');
+    try {
+      const result = statements.map(s => ({ results: execute(s.__sql, s.__values), success: true }));
+      sqlite.exec('COMMIT'); return result;
+    } catch (error) { sqlite.exec('ROLLBACK'); throw error; }
   } } as unknown as D1Database;
   let sendFails = false;
   const queue = { sendBatch: async (batch: { body: RefreshMessage }[]) => {
@@ -60,7 +68,7 @@ export function harness(t: TestContext) {
         offer_count: status === 'complete' ? 2 : status === 'pending' ? null : 0,
         fetched_at: status === 'complete' || status === 'empty' ? time - 1000 : null,
         expires_at: status === 'pending' ? null : time + cfg.ttl, last_requested_at: time,
-        access_window_at: time, access_count: 1, priority: 1, next_refresh_at: time + cfg.ttl,
+        access_window_at: time, access_count: 1, priority: 1, is_default: 0, queue_lane: 'background', next_refresh_at: time + cfg.ttl,
         retry_after: 0, queue_token: null, queued_until: 0, run_token: null, run_until: 0,
         failure_count: 0, last_error: null, created_at: time, updated_at: time, ...overrides,
       };

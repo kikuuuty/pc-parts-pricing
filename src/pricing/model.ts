@@ -1,7 +1,10 @@
 export type Provider = 'yahoo';
 export type Status = 'complete' | 'empty' | 'unsupported' | 'pending' | 'missing';
 export interface ProductRef { source: string; upstream_key: string }
-export type RefreshReason = 'user_request' | 'scheduled_refresh' | 'cold_warmup' | 'manual';
+export type RefreshReason = 'user_request' | 'default_warmup' | 'scheduled_refresh' | 'cold_warmup' | 'manual';
+export type Lane = 'interactive' | 'background';
+export const laneFor = (reason: RefreshReason): Lane =>
+  reason === 'user_request' || reason === 'manual' ? 'interactive' : 'background';
 export interface RefreshMessage extends ProductRef {
   provider: Provider;
   reason: RefreshReason;
@@ -28,6 +31,8 @@ export interface Row extends ProductRef {
   access_window_at: number;
   access_count: number;
   priority: number;
+  is_default: number;
+  queue_lane: Lane;
   next_refresh_at: number;
   retry_after: number;
   queue_token: string | null;
@@ -60,8 +65,8 @@ export const refKey = (ref: ProductRef) => JSON.stringify([ref.source, ref.upstr
 export const uniqueRefs = (refs: ProductRef[]) => [...new Map(refs.map(ref => [refKey(ref), ref])).values()];
 
 export function validateProducts(input: unknown): ProductRef[] {
-  if (!Array.isArray(input) || input.length < 1 || input.length > 20) throw new Error('INVALID_REQUEST');
-  return input.map(ref => {
+  if (!Array.isArray(input) || input.length < 1) throw new Error('INVALID_REQUEST');
+  return Array.from(input, ref => {
     if (!ref || typeof ref !== 'object' || Array.isArray(ref) || Object.keys(ref).length !== 2 ||
       typeof ref.source !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(ref.source) ||
       typeof ref.upstream_key !== 'string' || ref.upstream_key.length > 200 ||
@@ -73,7 +78,7 @@ export function validateProducts(input: unknown): ProductRef[] {
 export function validateMessage(value: unknown): RefreshMessage {
   const m = value as RefreshMessage;
   if (!m || typeof m !== 'object' || Object.keys(m).length !== 5 || m.provider !== 'yahoo' ||
-    !['user_request', 'scheduled_refresh', 'cold_warmup', 'manual'].includes(m.reason) ||
+    !['user_request', 'default_warmup', 'scheduled_refresh', 'cold_warmup', 'manual'].includes(m.reason) ||
     typeof m.token !== 'string' || !/^[a-f0-9-]{36}$/.test(m.token)) throw new Error('INVALID_MESSAGE');
   validateProducts([{ source: m.source, upstream_key: m.upstream_key }]);
   return m;

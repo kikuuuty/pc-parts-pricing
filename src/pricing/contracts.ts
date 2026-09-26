@@ -11,4 +11,5 @@ export interface PricingRpc {
 
 export interface PricingAdminRpc {
   seedWarmup(products: ProductRef[]): Promise<RpcResult<{ registered: number }>>;
+  syncDefaultWarmup(): Promise<RpcResult<{ synced: number; failed: number }>>;
 }

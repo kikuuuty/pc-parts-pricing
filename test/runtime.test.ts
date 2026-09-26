@@ -22,7 +22,8 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
         script: `export default { async fetch(request, env) {
           const input = await request.json();
           const path = new URL(request.url).pathname;
-          const result = path === '/seed' ? await env.ADMIN.seedWarmup(input)
+          const result = path === '/sync' ? await env.ADMIN.syncDefaultWarmup()
+            : path === '/seed' ? await env.ADMIN.seedWarmup(input)
             : path === '/refresh' ? await env.PRICING.requestRefresh(input)
             : await env.PRICING.getPriceSummaries(input);
           return Response.json(result);
@@ -30,11 +31,18 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
       },
       {
         name: 'pricing', modules: true, compatibilityDate: '2026-09-26', script: bundle.outputFiles[0].text,
-        d1Databases: { DB: 'test-pricing' }, queueProducers: { REFRESH_QUEUE: 'test-refresh' },
-        queueConsumers: { 'test-refresh': { maxBatchSize: 1, maxBatchTimeout: 0, retryDelay: 180, maxRetries: 3 } },
+        d1Databases: { DB: 'test-pricing' }, queueProducers: { REFRESH_QUEUE: 'test-refresh', INTERACTIVE_QUEUE: 'test-interactive' },
+        queueConsumers: {
+          'test-refresh': { maxBatchSize: 1, maxBatchTimeout: 0, retryDelay: 360, maxRetries: 3 },
+          'test-interactive': { maxBatchSize: 1, maxBatchTimeout: 0, retryDelay: 360, maxRetries: 3 },
+        },
         bindings: { YAHOO_SHOPPING_APP_ID: 'test-only-never-live' },
-        serviceBindings: { CATALOG: async request => {
+        serviceBindings: { PRICING_BATCH: { name: 'pricing', entrypoint: 'PricingBatch' }, CATALOG: async request => {
           catalogCalls++;
+          const url = new URL(request.url);
+          if (url.pathname === '/v1/categories') return MFResponse.json({ categories: ['cpu'] });
+          if (url.pathname === '/v1/search') return MFResponse.json({ data: [{ ...ref(3000), category: 'cpu' }],
+            meta: { limit: Number(url.searchParams.get('limit')), offset: 0, returned: 1 } });
           if (new URL(request.url).pathname.endsWith('/resolve')) {
             const input = await request.json() as { products: { source: string; upstream_key: string }[] };
             // The real Catalog rejects Queue metadata in a durable reference.
@@ -58,7 +66,7 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   t.after(async () => { releaseProvider(); await mf.dispose(); });
   const db = await mf.getD1Database('DB', 'pricing');
   // Execute the actual migration as individual statements in one D1 batch.
-  const migration = readFileSync('migrations/0001_pricing.sql', 'utf8');
+  const migration = readFileSync('migrations/0001_pricing.sql', 'utf8') + '\n' + readFileSync('migrations/0002_demand_warmup.sql', 'utf8');
   await db.batch(migration.replace(/--[^\n]*/g, '').split(';').map(sql => sql.trim()).filter(Boolean).map(sql => db.prepare(sql)));
   const rpc = async (path: string, input: unknown) => {
     const response = await mf.dispatchFetch(`https://test.internal${path}`, {
@@ -93,7 +101,7 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   assert.equal((await rpc('/seed', [ref(3), ref(4), ref(5)])).data.registered, 3);
   const worker = await mf.getWorker('pricing');
   await worker.scheduled({ cron: '*/15 * * * *' });
-  await waitFor(async () => (await db.prepare("SELECT COUNT(*) AS n FROM product_price_summary WHERE status='unsupported'").first<{ n: number }>())!.n === 2);
+  await waitFor(async () => (await db.prepare("SELECT COUNT(*) AS n FROM product_price_summary WHERE status='unsupported'").first<{ n: number }>())!.n === 3);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM product_price_summary WHERE status='pending'").first<{ n: number }>())!.n, 2);
   assert.equal(providerCalls, 1);
   assert.equal((await worker.fetch('https://pricing.internal/')).status, 404);
@@ -109,6 +117,22 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   assert((await rpc('/summary', warmRefs)).data.every(p => p.providers.yahoo.status === 'complete'));
   assert.equal(providerCalls, 1);
   t.diagnostic(`D1 20 warm rows: rows_read=${warmLookup.meta.rows_read}, rows_written=${warmLookup.meta.rows_written}, statements=1`);
+  assert.equal((await db.prepare("SELECT is_default FROM product_price_summary WHERE upstream_key='CPU/test-3000'").first<{ is_default: number }>())!.is_default, 1);
+  assert.equal((await rpc('/sync', [])).ok, true);
+  const bulk = Array.from({ length: 601 }, (_, i) => ref(i + 4000));
+  await db.prepare(`INSERT INTO product_price_summary
+    (source,upstream_key,provider,status,lowest_price,offer_count,fetched_at,expires_at,last_requested_at,next_refresh_at,created_at,updated_at)
+    SELECT json_extract(value,'$.source'),json_extract(value,'$.upstream_key'),'yahoo','complete',57800,1,?2,?3,?2,?3,?2,?2
+    FROM json_each(?1)`).bind(JSON.stringify(bulk), now, now + 21600000).run();
+  const result = await rpc('/summary', [bulk[600], ...bulk, bulk[0]]);
+  assert.equal(result.ok, true); assert.equal(result.data.length, 603);
+  assert.equal(result.data[0].upstream_key, bulk[600].upstream_key);
+  assert(result.data.every(p => p.providers.yahoo.status === 'complete'));
+  const fifty = await db.prepare(LOOKUP_SQL).bind(JSON.stringify(bulk.slice(0, 50))).all();
+  assert.equal(fifty.meta.rows_read, 100); assert.equal(fifty.meta.rows_written, 0);
+  t.diagnostic(`D1 50 warm rows: rows_read=${fifty.meta.rows_read}, rows_written=${fifty.meta.rows_written}; 601-ref RPC passed`);
+  assert.equal((await rpc('/seed', Array.from({ length: 601 }, (_, i) => ref(i + 5000)))).data.registered, 601);
+  assert.equal(providerCalls, 1);
   await db.prepare('DROP TABLE product_price_summary').run();
   assert.deepEqual(await rpc('/summary', [ref()]), { ok: false, error: { code: 'PRICING_UNAVAILABLE' } });
 });

@@ -18,6 +18,11 @@
 		{
 			"binding": "CATALOG",
 			"service": "pc-parts-catalog"
+		},
+		{
+			"binding": "PRICING_BATCH",
+			"service": "pc-parts-pricing",
+			"entrypoint": "PricingBatch"
 		}
 	],
 	"queues": {
@@ -25,6 +30,10 @@
 			{
 				"binding": "REFRESH_QUEUE",
 				"queue": "pc-parts-pricing-refresh"
+			},
+			{
+				"binding": "INTERACTIVE_QUEUE",
+				"queue": "pc-parts-pricing-interactive"
 			}
 		],
 		"consumers": [
@@ -34,7 +43,16 @@
 				"max_batch_timeout": 5,
 				"max_concurrency": 1,
 				"max_retries": 3,
-				"retry_delay": 180,
+				"retry_delay": 360,
+				"dead_letter_queue": "pc-parts-pricing-dead-letter"
+			},
+			{
+				"queue": "pc-parts-pricing-interactive",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_concurrency": 1,
+				"max_retries": 3,
+				"retry_delay": 360,
 				"dead_letter_queue": "pc-parts-pricing-dead-letter"
 			}
 		]
@@ -47,7 +65,9 @@
 	"vars": {
 		"YAHOO_SUMMARY_TTL_SECONDS": "21600",
 		"MAX_STALE_SECONDS": "604800",
-		"CRON_BATCH_SIZE": "4",
+		"CRON_BATCH_SIZE": "8",
+		"DEFAULT_PAGE_WARMUP_SIZE": "20",
+		"DEFAULT_PAGE_SYNC_SECONDS": "21600",
 		"WARMUP_BATCH_SIZE": "1",
 		"QUEUE_DAILY_LIMIT": "1000",
 		"YAHOO_DAILY_LIMIT": "1500",

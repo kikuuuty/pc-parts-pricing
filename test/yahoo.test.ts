@@ -191,10 +191,11 @@ test('D1 pacing is shared across independent budgets; minute/day limits and 429 
   await make().admit(); await make().admit();
   assert.deepEqual(waits, [1000]);
   h.cfg.yahooMinute = 2;
-  await assert.rejects(make().admit(), (e: RefreshError) => e.reason === 'rate_limit');
+  await make().admit(); // wait for the next minute inside the consumer, not Cron
+  assert.equal(waits.at(-1), 59000);
   h.advance(60000); h.cfg.yahooDaily = 2;
   await assert.rejects(make().admit(), (e: RefreshError) => e.retryAfter > 3600);
-  h.advance(DAY); await make().admit();
+  h.advance(DAY); h.cfg.yahooDaily = 1500; await make().admit();
   await make().cooldown(120);
   await assert.rejects(make().admit(), (e: RefreshError) => e.retryAfter === 120);
   h.advance(120000); await make().admit();

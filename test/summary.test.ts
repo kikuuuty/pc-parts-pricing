@@ -45,7 +45,7 @@ test('stale allowance is bounded; expired values become pending, never empty', t
   assert.equal(summary(row, row.expires_at!, { ...h.cfg, maxStale: 0 }).status, 'pending');
 });
 
-for (const input of [null, {}, [], Array(21).fill(ref()), [1], [{ ...ref(), id: 1 }],
+for (const input of [null, {}, [], new Array(1), [1], [{ ...ref(), id: 1 }],
   [{ source: 'UPPER', upstream_key: 'CPU/a' }], [{ source: 'buildcores', upstream_key: 'CPU/..' }],
   [{ source: 'buildcores', upstream_key: 'CPU/a/b' }], [{ source: 'buildcores', upstream_key: 'CPU/' + 'x'.repeat(201) }]]) {
   test(`invalid summary input is rejected before SQL: ${JSON.stringify(input).slice(0, 55)}`, async t => {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { config } from '../src/config';
+import { config, POLICY } from '../src/config';
 
 test('deployment is private, uses explicit catalog boundary and bounded Queue/Cron', () => {
   const value = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
@@ -12,7 +12,15 @@ test('deployment is private, uses explicit catalog boundary and bounded Queue/Cr
   assert.equal(value.d1_databases.length, 1);
   assert.equal(value.queues.consumers[0].max_concurrency, 1);
   assert.equal(value.queues.consumers[0].max_batch_size, 1);
-  assert(value.queues.consumers[0].retry_delay * 1000 > 120000);
+  assert.equal(value.queues.consumers.length, 2);
+  for (const consumer of value.queues.consumers) {
+    assert.equal(consumer.max_batch_size, 1); assert.equal(consumer.max_concurrency, 1);
+    assert(consumer.retry_delay * 1000 > POLICY.runLease);
+    assert.equal(consumer.dead_letter_queue, 'pc-parts-pricing-dead-letter');
+  }
+  assert.equal(value.queues.producers[0].queue, 'pc-parts-pricing-refresh');
+  assert.equal(value.queues.producers[1].queue, 'pc-parts-pricing-interactive');
+  assert.equal(value.services[1].entrypoint, 'PricingBatch');
   assert.deepEqual(value.triggers.crons, ['*/15 * * * *']);
   config(value.vars);
 });

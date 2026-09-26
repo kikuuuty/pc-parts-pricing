@@ -6,7 +6,7 @@ export function fresh(row: Row | undefined, now: number): boolean {
 }
 export function needsRefresh(row: Row | undefined, now: number): boolean {
   return !row || (!fresh(row, now) && row.status !== 'unsupported' &&
-    row.queued_until <= now && row.retry_after <= now);
+    (row.queued_until <= now || (row.queue_lane === 'background' && row.run_until <= now)) && row.retry_after <= now);
 }
 export function summary(row: Row | undefined, now: number, cfg: Config): Summary {
   const stale = !!row && row.status !== 'pending' && !fresh(row, now);
@@ -21,6 +21,7 @@ export function summary(row: Row | undefined, now: number, cfg: Config): Summary
 }
 export function refreshTier(row: Row, now: number): { priority: number; interval: number } {
   const age = row.last_requested_at === null ? Infinity : now - row.last_requested_at;
+  if (row.is_default) return { priority: 0, interval: POLICY.defaultInterval };
   if (age < DAY && now - row.access_window_at < DAY && row.access_count >= POLICY.hotAccessBuckets)
     return { priority: 0, interval: POLICY.hotInterval };
   if (age < 7 * DAY) return { priority: 1, interval: POLICY.recentInterval };
