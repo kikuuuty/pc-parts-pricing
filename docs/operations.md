@@ -130,12 +130,13 @@ DLQ自動replay・強制lease解除用の公開/管理RPCは初版にはあり�
 ## Production更新
 
 既存Worker、D1 ID、refresh Queue、DLQ、Cron、CATALOG、Yahoo Secretを維持します。
-今回のローカル実装ではremote作成/削除、remote migration、deployは行っていません。
+2026-09-26にinteractive Queue追加・0002 remote migration・Worker deployを完了しました。
+通常の更新ではQueueの再作成やSecretの再登録は不要です。
 
 1. `git diff -- wrangler.jsonc migrations`で差分確認。
-2. `npx wrangler queues list`、`npx wrangler d1 migrations list pc-parts-pricing --remote`で既存resource/0001を確認。
+2. `npx wrangler queues list`、`npx wrangler d1 migrations list pc-parts-pricing --remote`で既存resourceと未適用migrationを確認。
 3. 未作成なら **`npx wrangler queues create pc-parts-pricing-interactive`だけ**追加。
-4. `npm run db:migrate:remote`で0002追加適用。既存0001は書換えません。
+4. 未適用migrationがあれば`npm run db:migrate:remote`で適用。既存migrationは書換えません。
 5. `npm run check`、`npm run build`。private URL設定、同じD1 ID、2 consumer、自己bindingを確認。
 6. `npm run deploy`。両Queueは既存DLQへ接続、旧refresh messageの形式もそのまま受理。
 7. private callerで数件のsummaryを確認。pending→fresh、同一ref polling、background backlog、lane budgetを監視。
@@ -145,6 +146,20 @@ DLQ自動replay・強制lease解除用の公開/管理RPCは初版にはあり�
 旧Workerも新schemaを読めますが、旧コードはinteractive Queueをdrainできずlane予約を理解しません。
 rollbackはまずproducer/consumer状況を確認し、追加Queueの処理を停止/隔離してから旧versionへ戻す運用が必要です。
 単純な旧version rollbackで追加QueueやD1を削除しないでください。通常は新versionのforward fixを優先します。
+
+### 本番反映記録（2026-09-26）
+
+- Source commit: [`0b2e9fc`](https://github.com/kikuuuty/pc-parts-pricing/commit/0b2e9fc)（mainへpush済み）。
+- [GitHub Actions](https://github.com/kikuuuty/pc-parts-pricing/actions/runs/36242607618)で`npm run check`・`npm run build`成功。
+- 追加Queue: `pc-parts-pricing-interactive`。既存refresh Queue/DLQは同じIDで保持。
+- remote D1: 0001適用済みを確認後、0002のみ追加適用。反映後に未適用migrationなしを確認。
+- Worker Version: `94f98dde-2f97-4433-8c5e-c554b540a224`、2026-09-26 12:41 UTCに100%切替。
+- 両Queueのproducer/consumer、`PRICING_BATCH`自己binding、CATALOG、Yahoo Secret、15分Cronを確認。
+- 反映前後のsummaryは1行、queue budget使用数3・Yahoo budget使用数1を保持。
+  `default_sync`行を追加。反映直後のdefault登録カテゴリ数は0で、以後のCronで段階的に同期する状態。
+
+この記録はdeployment・設定・migration・既存データ保持の確認結果です。
+新versionでの本番Warmup完了・Yahoo取得までの動作確認は未実施です。
 
 ## 検証記録
 

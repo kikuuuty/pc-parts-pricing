@@ -24,7 +24,7 @@ pc-parts-pricing
 |pc-parts-pricing|価格summary、stale判定、refresh scheduling、Queue/Cron、Provider正規化・保護|
 |[pc-build-sheet](https://github.com/kikuuuty/pc-build-sheet)|検索一覧・構成・価格表示UI。ブラウザからYahoo/Rakutenを直接呼ばない|
 
-2026-09-26に各repoのorigin/mainをfetchし、Pricing `aeb67d6`、Catalog `fb202e1`、Build Sheet `61eea72`を確認しました。
+需要駆動refreshの実装前調査（2026-09-26）で各repoのorigin/mainをfetchし、Pricing `aeb67d6`、Catalog `fb202e1`、Build Sheet `61eea72`を確認しました。
 Catalogのcategories/search/resolve/detail実装・テストと既存境界ドキュメントを確認しています。
 Build Sheet `61eea72`と作業ツリーの最新bulk接続も確認しています。
 Catalogの現在のbulkはnumeric ID入力・読取専用、単一Offer取得は同期式です。本WorkerのRPCはそれらとは別の契約です。
@@ -261,7 +261,7 @@ Provider別のbudget行・TTL・Secret・回帰テストを追加します。既
 |---|---|
 |`DB`|Pricing専用D1|
 |`REFRESH_QUEUE`|既存refresh Queue、background producer|
-|`INTERACTIVE_QUEUE`|新規interactive Queue producer|
+|`INTERACTIVE_QUEUE`|interactive Queue producer|
 |`PRICING_BATCH`|同Workerの`PricingBatch`への自己Service Binding。内部D1作業の分割|
 |`CATALOG`|既存Catalog WorkerへのService Binding（HTTP fetch境界）|
 |`YAHOO_SHOPPING_APP_ID`|Pricing WorkerのSecretのみ|
@@ -311,15 +311,29 @@ npm run smoke:yahoo -- --live --code <verified-JAN-or-EAN13>
 
 ## Deploy
 
-Worker / D1 / refresh Queue / DLQ / Cron / CATALOG binding / Yahoo Secretは**既存production resource**です。
+### 本番反映状況（2026-09-26）
+
+需要駆動refreshはcommit [`0b2e9fc`](https://github.com/kikuuuty/pc-parts-pricing/commit/0b2e9fc)を`main`へpush後、本番へ反映済みです。
+
+- Worker Version: `94f98dde-2f97-4433-8c5e-c554b540a224`（反映時に100%切替を確認）。
+- `pc-parts-pricing-interactive`作成済み。既存refresh Queueとともにproducer/consumer接続済み。
+- remote D1に0002適用済み。反映時点で未適用migrationなし、既存summaryとbudget使用数を保持。
+- `PRICING_BATCH`自己bindingと15分Cronを反映。既存CATALOG binding・Yahoo Secretを保持。
+- [GitHub Actions](https://github.com/kikuuuty/pc-parts-pricing/actions/runs/36242607618)の`check`・`build`成功（offline tests 105件成功）。
+
+反映直後の確認時点ではdefault登録カテゴリ数は0でした。登録・価格取得は以後のCronで段階的に進みます。
+新versionでの本番Warmup完了・Yahoo取得までの動作確認は、この反映記録には含みません。
+
+### 今後の更新手順
+
+Worker / D1 / 両Queue / DLQ / Cron / Service Bindings / Yahoo Secretは**既存production resource**です。
 `database_id=a5d4eae0-1e31-49c0-a052-78e30b486273`を保持します。再作成しません。
-今回必要な新resourceはinteractive Queueのみ。以下はオペレーター実行手順です。
+通常の更新でQueue作成やSecret再登録は不要です。
 
 ```sh
 npx wrangler queues list
 npx wrangler d1 migrations list pc-parts-pricing --remote
-# 同名Queueがまだないことを確認して新規作成（既存refresh/DLQは保持）
-npx wrangler queues create pc-parts-pricing-interactive
+# 未適用migrationがある場合のみ適用
 npm run db:migrate:remote
 npm run check
 npm run build
@@ -328,9 +342,10 @@ npm run deploy
 
 `CATALOG`のservice名は同一accountの既存Worker名と一致させます。
 Service Bindingを使うcaller WorkerはPricingのdeploy後に設定します。CronとQueue consumerは公開Routeなしで動作します。
-0002適用後、両consumerと`PricingBatch`自己bindingを同じWorker deploymentで反映します。
+別環境への初回導入では、未作成の場合のみ`npx wrangler queues create pc-parts-pricing-interactive`でQueueを追加します。
+0002を含むmigration適用後、両consumerと`PricingBatch`自己bindingを同じWorker deploymentで反映します。
 既存messageの形式は互換。昇格で古くなったtokenはskipします。Secretの再登録は不要です。
-今回の作業ではremote作成・migration・deployを実行しません。[更新・rollback手順](docs/operations.md#production更新)
+[更新・rollback手順と本番反映記録](docs/operations.md#production更新)
 DLQの確認・復旧方法は[運用ドキュメント](docs/operations.md)。
 
 ## Cloudflare Free枠の運用上限
@@ -409,7 +424,7 @@ docs/                     interface / operations
 
 未実装: 価格履歴、Rakuten、公開pricing-gateway、Build Sheet接続、個別店舗Offer配信、全catalogの自動列挙・完全warmup、
 Catalog更新イベントによる即時無効化、isolate間の候補coalescing、DLQ自動replay。
-remote resource作成・Secret登録・production deploy・実API smokeも今回のローカル検証では行っていません。
+需要駆動refreshのproduction deployは完了しています。新versionの実Yahoo smoke・負荷試験は未実施です。
 
 次フェーズではgatewayで公開HTTPとRPCを仲介し、Build Sheetのnumeric ID summary入力をdurable refsへ変更します。
 検索1ページにつき1bulk request、stale表示、遅延価格による手入力価格の非上書き、既存店舗比較経路の扱いを合わせて実装してください。
