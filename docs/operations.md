@@ -1,5 +1,8 @@
 # Operations / failure recovery
 
+本番の読み取り専用診断と少数製品試験の準備は[production-verification.md](production-verification.md)を参照。
+以下の過去の反映記録は、現在の本番正常性を保証するものではありません。
+
 ## Durable enqueue / execution
 
 ```text
