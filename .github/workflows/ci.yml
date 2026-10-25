@@ -16,3 +16,4 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: npm run build:gateway
+      - run: npm run build:gateway:initial

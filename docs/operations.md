@@ -216,16 +216,26 @@ rollbackはまずproducer/consumer状況を確認し、追加Queueの処理を�
    0003は現行Provider health/recoveryに必要です。未適用なら別途承認された範囲で
    `npm run db:migrate:remote`、必要なPricing本体更新（`npm run deploy`）の順で反映。
    既存DB UUID・Queue・DLQ・Cron・Secretは維持し、作り直しません。Gateway専用migrationはありません。
-3. `npm run check`、`npm run build`、`npm run build:gateway`を確認。
-   `wrangler.jsonc`は本体、`wrangler.gateway.jsonc`は公開Gateway。
+3. `npm run check`、`npm run build`、`npm run build:gateway`、`npm run build:gateway:initial`を確認。
+   `wrangler.jsonc`は本体、`wrangler.gateway.jsonc`はGatewayの安全な初期設定、
+   **`wrangler.gateway.production.jsonc`は本番運用設定の正**です。
+   両Gateway設定は同じWorker名・PRICING参照先・namespaceを使い、別環境やsuffix付きWorkerは増やしません。
    GatewayにD1/Queue/Cron/Catalog/Yahoo Secret、PricingAdmin/PricingBatchがないことを確認。
 4. Gatewayの`PRICING`が同一accountの`pc-parts-pricing` default entrypointを指すことを確認。
-   `ALLOWED_ORIGINS`を確定したSheetのscheme/host/portのJSON配列に設定（localhostや`*`を本番へ混ぜない）。
-   4つのnamespaceがaccount内の他Workerと衝突しないこと、12/60/2/6 requests per 60秒を確認。
+   本番用ファイルの`vars.ALLOWED_ORIGINS`を、確定したSheetのHTTPS OriginのJSON配列文字列に設定。
+   HTTP、localhost/loopback、`*`、`null`、credentialsやpath/query付きURLは本番検証で拒否します。
+   初期ファイルのvarsは`"[]"` / `"false"`のまま維持し、本番値をコピーしません。
+   4つのnamespaceがaccount内の他Workerと衝突しないことを確認。
+   初期limitは12/60/2/6 requests per 60秒。本番`ratelimits[].simple.limit`は各初期値以下の正の安全な整数へ縮小可能です。
    local Catalog設定の29599001〜29599007 / 29599101〜29599107とは非衝突を確認済みですが、account全体の確認は別途必要です。
-   `SUMMARY_ENABLED=false`のまま`npm run deploy:gateway`で先に安全に配置し、設定確認後にtrueへ変更して再反映。
+   本番用ファイルの`SUMMARY_ENABLED="false"`のまま検証/CIを通し、`npm run deploy:gateway`で先に安全に配置。
+   設定確認後、本番用ファイルを`"true"`へ変更し、再度検証/CIを通して、承認後に同じコマンドで反映します。
+   有効なのにOrigin空配列は設定忘れとして拒否します。停止中は空配列も既存許可Originも有効な設定です。
+   `build:gateway` / `deploy:gateway`は共通検証を通してから**本番用ファイルを明示指定**します。
+   `build:gateway:initial`だけが初期ファイルのdry-runです。通常の本番deployで初期停止設定を誤って上書きしません。
+   不正設定はCLIの非0終了でWrangler実行前に停止。`--var` / `--config` / `--env`で上書きせず、ファイルを正として運用します。
    workers.devによる公開を想定し、`preview_urls:false`を維持。実際のURLはdeploy出力/設定で確認し、推測しません。
-   Dashboard変更は次のdeployでrepoのvarsに上書きされるため、実際に運用する設定へ揃えます。Secretは複製しません。
+   Dashboard変更は次のdeployで本番用ファイルの値に上書きされるため、repoにも実運用値を反映します。Secretは複製しません。
 5. **本番試験も承認後のみ**、Catalogで存在を確認した少数の実在refで限定疎通。
    テストfixture/説明用keyは本番へ送信しません。未登録ならD1書込・非同期Queueを起こすことを前提に、試験件数とpoll回数を事前制限。
    CORS、200/pending→後続結果、no-store/request ID、D1/Queue/Provider予算を観測。100件/全Catalog warmupや負荷試験は行いません。
@@ -234,15 +244,19 @@ rollbackはまずproducer/consumer状況を確認し、追加Queueの処理を�
 
 ### 緊急停止・縮小・rollback
 
-- `SUMMARY_ENABLED=false`をGatewayへ反映するとPOSTは503、RPCを呼びません。
-  例（承認後）: `npm run deploy:gateway -- --var SUMMARY_ENABLED:false`。
+- 本番用`wrangler.gateway.production.jsonc`の**`vars.SUMMARY_ENABLED`だけを文字列`"false"`へ変更**して反映するとPOSTは503、RPCを呼びません。
+  許可Origin、limiter上限・namespace等は保持し、初期ファイルの内容へ置き換えません。
+  `npm run check` / `npm run build:gateway`とCIを確認後、承認の範囲で`npm run deploy:gateway`を実行します。
+  初期ファイルからのdeployやCLIの`--var`上書きを緊急停止手順には使いません。
   true以外の値/必須設定不備でもfail closedです。既に受理したRPC・Queueは取り消されません。
 - 停止はGatewayだけです。Pricing本体のCron、両Queue、予算、lease/fencingを変更・停止しません。
-- 縮小はGateway設定のnative `simple.limit`を下げて再反映。通常/大batchの両方を確認。
+- 縮小は**本番用ファイル**のnative `simple.limit`を下げ、共通検証・dry-run・CIを通してから再反映。通常/大batchの両方を確認。
   60秒periodとRetry-After:60を合わせたまま運用します。Provider/Queue予算やbackoffを緩めないでください。
 - `ALLOWED_ORIGINS=[]`だけではOriginなしclientを停止できません。全受付停止には必ずSUMMARY_ENABLEDを使います。
+- 緊急時に承認されたDashboard上の一時停止を使う場合も、本番用ファイルのflagをfalseへ同期します。
+  そうしないと次のdeployでtrueへ戻る危険があります。再開は元の許可Origin・制限値を保持したままflagだけ戻し、再度CI/承認を経ます。
 - GatewayだけのrollbackはCloudflare deploymentsで既知の安全なGateway Versionへ戻します。
-  rollback先の許可Origin・受付フラグ・limiter・PRICINGも復元されるので再確認。必要なら停止版をforward deployする方が安全です。
+  rollback先の許可Origin・受付フラグ・limiter・PRICINGも復元されるので再確認し、本番用ファイルも同期。必要なら停止版をforward deployする方が安全です。
   初回導入なら停止設定で置くか公開route/workers.devをGatewayだけ無効化。本体/D1/Queue/Secretは削除しません。
   本体のrollbackは既存schema/Queue互換性の運用手順に従う別操作です。
 
@@ -264,12 +278,13 @@ Gateway設定のinvocation samplingは10%。小規模試験ではlog欠落があ
   原因をpendingやemptyへ置換したり、Gatewayで無条件retryして隠したりしません。
 - 任意ref登録によるD1 writeをQueue/Yahoo日次予算では止められません。
   Gateway native limiterも**拠点別・eventually consistentの近似値**で、分散濫用やFree枠超過を完全には防げません。
-  共有keyの1680 ref/分/拠点という名目上限を全世界予算・日次安全枠と説明しないでください。
+  共有keyの1680 ref/分/拠点は**初期設定における名目値**であり、全世界予算・日次安全枠ではありません。
+  縮小後は通常枠N・大batch追加枠Lについて`20×N + 80×min(N,L)`を再計算します（例: N=30/L=3なら840）。
   使用量増加時は早期に受付縮小/停止し、必要なら別途認証や厳密な予算方式を検討します（今回新DB/DOは追加しません）。
 - **暫定構成の制約:** 旧Catalog Offer APIのYahooアクセスはPricing側D1予算と別です。
   同じアプリIDを使う場合も合算保護はできません。CatalogのYahoo機能/Secretは今回削除・変更していません。
 
-### Gatewayローカル検証記録（2026-10-25）
+### Gateway初回実装のローカル検証記録（2026-10-25）
 
 - `npm run check`: 型検査とoffline全168テスト成功、failure/skip 0。
 - `npm run build` / `npm run build:gateway`: 両Workerのdeploy dry-run成功。実deployではありません。
@@ -278,3 +293,14 @@ Gateway設定のinvocation samplingは10%。小規模試験ではlog欠落があ
 - CI設定へGateway buildを追加。GitHub Actionsの実行結果はこのローカル検証記録に含みません。
 - 本番deploy、remote migration、本番API/実Yahoo試験は未実施（未承認）。
   Pricing本体のコード/設定/migration、およびSheet/Catalogのコードは変更していません。
+
+### Gateway設定管理修正のローカル検証記録（2026-10-25）
+
+- 原因: 初期停止値と本番運用値を同じWrangler設定で管理し、テストがOrigin/flag/limitの初期値へ完全一致を要求していました。
+- 本番用ファイルを分離し、共通検証で固定安全条件と変更可能値を区別。初期ファイルは従来の停止設定のままです。
+- `npm run check`: 型検査・offline全206テスト成功、failure/skip 0。架空Originでの本番有効化・Origin変更、共有60→30・大batch枠縮小を検証。
+- 不正JSON/Origin/flag/limit/period、binding/resource混入、namespace重複を拒否。
+  実CLIとnpmのguardを通すテストでも、不正時に**ローカルmock deploy**が呼ばれないことを確認（Wrangler実deployは呼びません）。
+- `npm run build`、`npm run build:gateway`（本番ファイル）、`npm run build:gateway:initial`（初期ファイル）のdry-run成功。
+- GitHub Actionsは未実行。本番deploy・remote migration・本番APIアクセス・Cloudflare設定変更は一切実行していません。
+  Gateway HTTP処理、Pricing本体の処理/設定/migration、Sheet/Catalogのコード、依存バージョンは変更していません。

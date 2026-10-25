@@ -1,6 +1,6 @@
 # 公開 Pricing Gateway HTTP v1
 
-実装: `src/gateway/`。設定: `wrangler.gateway.jsonc`。
+実装: `src/gateway/`。初期設定: `wrangler.gateway.jsonc`。本番運用設定: `wrangler.gateway.production.jsonc`。
 **実装・ローカル検証用の契約であり、デプロイ済み・本番動作確認済みという意味ではありません。**
 本番Gateway URL、Sheet本番Origin、Pricing稼働Version/commit、migration適用状態は未確認です。
 
@@ -125,16 +125,40 @@ OPTIONSは同じpath/query検証、許可Origin、`Access-Control-Request-Method
 正常204、Pricing RPC/D1/Queue/limiterは呼びません。停止中も正常preflightは204、POSTは503です。
 preflight応答は`Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers`。
 
-本番設定の既定は`ALLOWED_ORIGINS="[]"`, `SUMMARY_ENABLED="false"`（停止）。
-**本番OriginやURLを推測して埋めません。** 運用担当者が実際のSheet Originを確定し、Gateway設定を反映してから接続します。
-localhostは後述のローカルdriverだけで明示許可。本番設定に自動追加されません。
+### 設定の役割と変更方法
+
+|ファイル|役割|
+|---|---|
+|`wrangler.gateway.jsonc`|安全な初期設定。`ALLOWED_ORIGINS="[]"`, `SUMMARY_ENABLED="false"`を常に維持。初期dry-run・ローカルdriverの基礎設定|
+|`wrangler.gateway.production.jsonc`|本番運用値の正。build/deployが明示指定。許可Origin・受付フラグ・縮小したlimiter上限はここで管理|
+
+両方ともWorker名は`pc-parts-pricing-gateway`、`PRICING → pc-parts-pricing` default entrypointです。
+`--env`やWorker名suffixを使いません。namespaceも既存の4値を維持し、新Worker/環境/クラウドリソースは追加しません。
+**今回、本番用設定もOrigin未設定・受付停止のまま**です。本番OriginやURLを推測して埋めません。
+
+本番有効化は`wrangler.gateway.production.jsonc`の`vars`を編集します。
+`ALLOWED_ORIGINS`は確定したSheetのHTTPS Originを格納した**JSON配列の文字列**、`SUMMARY_ENABLED`は文字列の`"true"`にします。
+架空のOriginは`test/gateway-config.test.ts`内だけで使い、本番ファイルへ転記しません。
+有効化中の空配列は設定忘れとして拒否します。停止中は空配列・既存の正常な許可Origin配列のどちらでも構いません。
+wildcard、`null`、credentials/path/query/fragment付きURL、HTTP、localhost（サブドメイン含む）、IPv4/IPv6 loopback等は本番検証で拒否します。
+Originなしclientの実行時契約は変更しません。この非空検査はブラウザ向け本番設定の要件です。
+
+`scripts/gateway-config.ts`の共通検証をテストと`validate:gateway` CLIが使います。
+両設定でWorker/entrypoint、通常PRICINGのみ、Version URL無効、D1/Queue/Cron/Catalog/Secret/管理bindingなし、
+limiter名と固定namespaceの対応・重複なし、flag/Originの形式、limit/periodを検証します。
+停止値の完全一致は**初期設定だけ**。本番の正常な有効化・Origin変更・レート縮小は検証に通ります。
+設定を編集したら`npm run check`と両Gateway dry-runを実行し、CI成功後、別途承認を得て反映してください。
+CLIの`--var` / `--config` / `--env`による設定上書きはこの手順では使いません。検証対象ファイルを正として管理します。
+Dashboardで変えた値も次回deployで本番用設定の値に上書きされます。一時停止を含め、repo側へ同期してください。
+
+localhostのHTTP許可は後述のローカルdriverだけに設定します。本番設定へ自動追加されません。
 
 ## 公開負荷保護
 
 Cloudflare現行[Rate Limiting binding公式仕様](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)を2026-10-25確認。
 Wrangler >=4.36.0が必要で、本repoの4.141.0の`ratelimits` schema / dry-runとMiniflareの実bindingで対応を確認しています。
 
-|binding|limit / 60秒|適用|専用namespace_id|
+|binding|初期limit / 60秒（安全ガード上限）|適用|専用namespace_id|
 |---|---:|---|---|
 |CLIENT_LIMITER|12|全POST、clientごと|2026102501|
 |GLOBAL_LIMITER|60|全POST、共有key|2026102502|
@@ -146,10 +170,18 @@ Wrangler >=4.36.0が必要で、本repoの4.141.0の`ratelimits` schema / dry-ru
 欠落・例外・`success`がbooleanでない不正結果はfail closedの503、拒否は429、どちらもRPCを呼びません。
 設定不備で無保護起動しません。`SUMMARY_ENABLED`は厳密な`"true"`だけ受付し、false/欠落/不正値は503。
 
-通常20件一覧の10〜30秒間隔polling（2〜6要求/分）に余裕を持たせ、最大batchを追加制限します。
-名目最大ref流量はclientあたり`10×20 + 2×100 = 400 ref/分`、共有枠は`54×20 + 6×100 = 1680 ref/分/拠点`。
+本番ファイルの各`ratelimits[].simple.limit`は**1〜各初期値**の安全な整数へ変更可能です。
+12/60/2/6への完全一致は要求せず、初期値は別の安全ガード上限として`LIMITER_POLICY`で管理します。
+初期値を超える拡大には別途予算・保護ポリシーのレビューが必要です。今回の値の引上げはありません。
+periodは両設定とも60秒固定で、実行時の`Retry-After:60`と共通検証で照合します。
+縮小後は通常一覧のpollingも429になりやすくなるため、想定利用量を確認してください。
+
+初期設定は通常20件一覧の10〜30秒間隔polling（2〜6要求/分）に余裕を持たせ、最大batchを追加制限しています。
+**初期設定における名目値**はclientあたり`10×20 + 2×100 = 400 ref/分`、共有枠`54×20 + 6×100 = 1680 ref/分/拠点`。
+変更後は、通常枠をN、大batch追加枠をLとして、`20×N + 80×min(N,L)`でclient/共有それぞれの名目最大ref流量を再計算します。
+例: 共有通常枠30・大batch枠3なら`20×30 + 80×3 = 840 ref/分/拠点`。1680が縮小後も固定されるわけではありません。
 これは重複込みの受付件数による概算で、D1 write件数・Provider検索数ではありません。
-すべて100件なら共有枠は6要求=600 ref/分です。Provider/Queue側の予算・backoffは変更しません。
+すべて100件なら初期設定の共有枠は6要求=600 ref/分です。Provider/Queue側の予算・backoffは変更しません。
 
 client keyはCloudflareの`CF-Connecting-IP`をSHA-256 hash化し、`X-Forwarded-For`や任意client IDは信用しません。
 edge identityがないローカル等では匿名共有bucketに集約し、無制限にしません。hashもログへ出しません。
@@ -183,8 +215,10 @@ npm run dev:gateway:rpc
 |mock mode|pc-parts-pricing（test-only RPC stub）|Miniflare内だけ、HTTP公開portなし|
 |実RPC mode|pc-parts-pricing（実本体）|Miniflare内だけ、HTTP公開portなし、`PRICING_BATCH → 同名PricingBatch`|
 
-driverはMiniflare/workerdを一括起動し、`SUMMARY_ENABLED=true`、許可Originを
+driverは**初期設定ファイルだけを読み、停止状態を共通検証したうえで**Miniflare/workerdを一括起動し、memory内で`SUMMARY_ENABLED=true`、許可Originを
 `http://localhost:5173`, `http://127.0.0.1:5173`に限定します。実native limiterも有効です。
+本番設定のOrigin/flag/limitを編集してもdriverへ取り込みません。remote接続先へ切り替わりません。
+レート動作テストは初期設定から読み込んだclient limitを使用し、「13回目」などの回数へ固定しません。
 mock modeはRPC返却値だけfixtureを使用。実RPC modeは本物のPricing/D1/Queue、Catalog/Provider境界だけmock。
 初回はpending、後続はmock Providerのcompleteを確認できます（即時完了や完了時刻は保証しません）。
 実Yahoo/App ID、Catalog起動、`.dev.vars`、remote bindingは不要で、外部通信は拒否/ローカルmockに閉じます。
@@ -209,11 +243,17 @@ port 8788競合時は他のdriverを止めてください。本体単独の`npm 
 |npm run typecheck|本体・Gateway・テスト・local driverすべて|
 |npm test / npm run check|offline全テスト / 型検査＋全テスト|
 |npm run build|本体deploy dry-run（既存対象を維持）|
-|npm run build:gateway|Gateway deploy dry-run、dist/gatewayへ出力|
+|npm run validate:gateway|初期・本番両ファイルのoffline共通検証|
+|npm run build:gateway|両設定の検証後、`--config wrangler.gateway.production.jsonc`のdeploy dry-run、dist/gatewayへ出力|
+|npm run build:gateway:initial|両設定の検証後、`--config wrangler.gateway.jsonc`のdeploy dry-run、dist/gateway-initialへ出力|
 |npm run deploy|本体の実deploy（明示承認後のみ）|
-|npm run deploy:gateway|Gatewayの実deploy（明示承認後のみ）|
+|npm run deploy:gateway|両設定の検証後、`--config wrangler.gateway.production.jsonc`の実deploy（明示承認後のみ）|
 
-CIは`check`, 本体`build`, `build:gateway`を実行します。設定分離も`test/gateway.test.ts`で検証します。
+Gateway build/deploy入口は`npm run validate:gateway && wrangler ...`で、検証失敗ならWranglerへ進みません。
+CIは`check`, 本体`build`, 本番`build:gateway`, 初期`build:gateway:initial`を実行します。
+`test/gateway-config.test.ts`は実際の共通検証へ変更した設定オブジェクト/JSONC一時ファイルを渡し、
+架空HTTPS Originでの有効化・Origin変更・limit縮小、危険設定拒否、CLI失敗時に**mock deploy**へ進まないことを検証します。
+`test/gateway.test.ts`は実初期設定のPOSTが503でRPCを呼ばないことを検証します。
 HTTP mock testsは入力/UTF-8/stream size/CORS/limiter/RPC障害/fixture透過を検証。
 `test/runtime.test.ts`は実Gateway HTTP→Service Binding→Pricing→D1/Queueと、Provider待機、永続登録、重複投入抑制、障害を検証し、既存601件RPCも維持。
 `test/gateway-local.test.ts`は両driverの起動/終了と実native limiterの429を検証します。テストは必ずdisposeし、Provider待機も解除します。

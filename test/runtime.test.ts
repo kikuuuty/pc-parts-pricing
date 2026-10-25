@@ -6,12 +6,13 @@ import { Miniflare, Response as MFResponse, Log, LogLevel, convertV4MiniflareOpt
 import { body, identifier, ref } from './helpers';
 import { LOOKUP_SQL } from '../src/storage/summaries';
 import type { ProductSummary } from '../src/pricing/model';
+import { INITIAL_CONFIG, readGatewayConfig } from '../scripts/gateway-config';
 
 test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked external boundaries', { timeout: 60000 }, async t => {
   const bundle = await build({ entryPoints: ['src/worker.ts'], bundle: true, write: false, format: 'esm',
     platform: 'browser', external: ['cloudflare:workers'] });
   const gateway = await build({ entryPoints: ['src/gateway/worker.ts'], bundle: true, write: false, format: 'esm', platform: 'browser' });
-  const gatewayConfig = JSON.parse(readFileSync('wrangler.gateway.jsonc', 'utf8'));
+  const gatewayConfig = readGatewayConfig(INITIAL_CONFIG, 'initial');
   let providerCalls = 0, catalogCalls = 0, releaseProvider!: () => void;
   const providerBlocked = new Promise<void>(resolve => { releaseProvider = resolve; });
   const mf = new Miniflare(convertV4MiniflareOptions({
@@ -21,7 +22,7 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
         name: 'gateway', modules: true, compatibilityDate: '2026-09-26', script: gateway.outputFiles[0].text,
         bindings: { ALLOWED_ORIGINS: '["http://localhost:5173"]', SUMMARY_ENABLED: 'true' },
         serviceBindings: { PRICING: 'pricing' },
-        ratelimits: Object.fromEntries(gatewayConfig.ratelimits.map((r: any) => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
+        ratelimits: Object.fromEntries(gatewayConfig.ratelimits.map(r => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
         outboundService: () => { throw new Error('Gateway must not access the Internet'); },
       },
       {

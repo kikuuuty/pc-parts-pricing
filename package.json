@@ -14,9 +14,11 @@
     "db:migrate": "wrangler d1 migrations apply pc-parts-pricing --local",
     "db:migrate:remote": "wrangler d1 migrations apply pc-parts-pricing --remote",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "build:gateway": "wrangler deploy --config wrangler.gateway.jsonc --dry-run --outdir dist/gateway",
+    "validate:gateway": "tsx scripts/check-gateway-config.ts",
+    "build:gateway": "npm run validate:gateway && wrangler deploy --config wrangler.gateway.production.jsonc --dry-run --outdir dist/gateway",
+    "build:gateway:initial": "npm run validate:gateway && wrangler deploy --config wrangler.gateway.jsonc --dry-run --outdir dist/gateway-initial",
     "deploy": "wrangler deploy",
-    "deploy:gateway": "wrangler deploy --config wrangler.gateway.jsonc",
+    "deploy:gateway": "npm run validate:gateway && wrangler deploy --config wrangler.gateway.production.jsonc",
     "smoke:yahoo": "tsx scripts/smoke-yahoo.ts",
     "smoke:pricing": "tsx scripts/smoke-pricing.ts"
   },

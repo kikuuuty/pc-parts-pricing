@@ -4,9 +4,11 @@ import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 import { Miniflare, Response as MFResponse, Log, LogLevel, convertV4MiniflareOptions } from 'miniflare';
 import type { ProductRef } from '../src/pricing/model';
+import { INITIAL_CONFIG, readGatewayConfig } from './gateway-config';
 
 export async function localGateway(rpc: boolean, fixture = 'fresh-complete', port = 8788) {
-  const config = JSON.parse(readFileSync('wrangler.gateway.jsonc', 'utf8'));
+  // Deliberately independent of production origins, enable flag and limits.
+  const config = readGatewayConfig(INITIAL_CONFIG, 'initial');
   const fixtures = JSON.parse(readFileSync('test/fixtures/gateway-http.json', 'utf8'));
   if (!fixtures[fixture]?.ok && fixture !== '503') throw new Error('Unknown fixture (429 uses the native limiter, not RPC)');
   const bundle = async (entry: string) => (await build({ entryPoints: [entry], bundle: true, write: false,
@@ -19,7 +21,7 @@ export async function localGateway(rpc: boolean, fixture = 'fresh-complete', por
       { name: 'pc-parts-pricing-gateway', modules: true, compatibilityDate: config.compatibility_date, script: gateway,
         bindings: { SUMMARY_ENABLED: 'true', ALLOWED_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]' },
         serviceBindings: { PRICING: 'pc-parts-pricing' },
-        ratelimits: Object.fromEntries(config.ratelimits.map((r: any) => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
+        ratelimits: Object.fromEntries(config.ratelimits.map(r => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
         outboundService: () => { throw new Error('No Gateway Internet access'); },
       },
       rpc ? { name: 'pc-parts-pricing', modules: true, compatibilityDate: config.compatibility_date, script: pricing,

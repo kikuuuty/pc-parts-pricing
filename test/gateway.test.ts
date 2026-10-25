@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { handle, MAX_BODY_BYTES, ROUTE, type GatewayEvent } from '../src/gateway/http';
 import { LIMITERS, type GatewayEnv } from '../src/gateway/protection';
 import type { ProductRef } from '../src/pricing/model';
+import { INITIAL_CONFIG, readGatewayConfig } from '../scripts/gateway-config';
 
 const fixtures = JSON.parse(readFileSync('test/fixtures/gateway-http.json', 'utf8'));
 const ref = (n = 1) => ({ source: 'buildcores', upstream_key: `CPU/test-${n}` });
@@ -214,16 +215,11 @@ test('Gateway rejects malformed summary fields, nullability and positional corre
   await error(await h.send(h.request({ products: [ref(1), ref(2)] })), 503, 'PRICING_UNAVAILABLE');
 });
 
-test('Gateway deployment has only normal PRICING and dedicated native limiters; default is stopped', () => {
-  const cfg = JSON.parse(readFileSync('wrangler.gateway.jsonc', 'utf8'));
-  assert.equal(cfg.name, 'pc-parts-pricing-gateway'); assert.equal(cfg.preview_urls, false);
-  assert.equal(cfg.workers_dev, true); assert.deepEqual(cfg.routes, []);
-  assert.deepEqual(cfg.services, [{ binding: 'PRICING', service: 'pc-parts-pricing', remote: false }]);
-  assert.deepEqual(Object.keys(cfg).sort(), ['$schema', 'compatibility_date', 'main', 'name', 'observability', 'preview_urls', 'ratelimits', 'routes', 'services', 'vars', 'workers_dev'].sort());
-  assert.deepEqual(cfg.ratelimits.map((r: any) => r.name), LIMITERS);
-  assert.deepEqual(cfg.ratelimits.map((r: any) => r.simple), [12, 60, 2, 6].map(limit => ({ limit, period: 60 })));
-  assert.equal(new Set(cfg.ratelimits.map((r: any) => r.namespace_id)).size, 4);
-  assert(cfg.ratelimits.every((r: any) => /^202610250[1-4]$/.test(r.namespace_id)));
+test('the actual initial config remains stopped at the HTTP boundary without RPC or limiter calls', async () => {
+  const cfg = readGatewayConfig(INITIAL_CONFIG, 'initial'), h = harness();
   assert.deepEqual(cfg.vars, { ALLOWED_ORIGINS: '[]', SUMMARY_ENABLED: 'false' });
+  Object.assign(h.env, cfg.vars);
+  await error(await h.send(), 503, 'PRICING_UNAVAILABLE');
+  assert.equal(h.calls.length, 0); assert.equal(h.checks.length, 0);
   assert(!readFileSync('src/gateway/worker.ts', 'utf8').includes('test/'));
 });

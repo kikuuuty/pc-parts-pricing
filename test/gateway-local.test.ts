@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { localGateway } from '../scripts/gateway-local';
+import { INITIAL_CONFIG, readGatewayConfig } from '../scripts/gateway-config';
 
 for (const rpc of [false, true]) test(`offline Gateway development driver starts/stops (${rpc ? 'real RPC' : 'mock'})`, { timeout: 60000 }, async t => {
   const mf = await localGateway(rpc, 'fresh-complete', 0);
@@ -18,7 +19,8 @@ for (const rpc of [false, true]) test(`offline Gateway development driver starts
     // Real native Rate Limiting binding in workerd, not an in-memory JS mock.
     let denied = false;
     // Allow a local window boundary without assuming an exact reset instant.
-    for (let i = 0; i < 25 && !denied; i++) {
+    const limit = readGatewayConfig(INITIAL_CONFIG, 'initial').ratelimits.find(r => r.name === 'CLIENT_LIMITER')!.simple.limit;
+    for (let i = 0; i < 2 * limit + 1 && !denied; i++) {
       const next = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ products: [{ source: 'buildcores', upstream_key: 'CPU/test-local' }] }),

@@ -68,20 +68,32 @@ codeは`INVALID_REQUEST`または`PRICING_UNAVAILABLE`。例外本文・stack・
 
 ### 公開HTTP Gateway
 
-別設定`wrangler.gateway.jsonc`の`pc-parts-pricing-gateway`だけがHTTPを公開します。
+別Worker `pc-parts-pricing-gateway`だけがHTTPを公開します。
+`wrangler.gateway.jsonc`は安全な初期設定、**`wrangler.gateway.production.jsonc`が本番運用設定の正**です。
+どちらも同じWorker名・PRICING参照先で、別環境やWorkerを追加する構成ではありません。
 `POST /v1/prices/summary`、1〜100 ref、64KiB、CORS完全一致allowlist、native Rate Limiting。
-通常枠は12/client/分・60/共有/分、21件以上は追加で2/client/分・6/共有/分です。
+初期値は通常枠12/client/分・60/共有/分、21件以上は追加で2/client/分・6/共有/分です。
+本番設定の上限は各初期値以下の正の安全な整数へ縮小可能、periodは60秒固定です。
 制限は拠点ごとの近似値であり、無料枠や全世界日次予算を保証しません。
 Gatewayは`PRICING`通常RPCのみ使用し、D1/Queue/Cron/Catalog/Secret/管理bindingを持ちません。
-既定は`SUMMARY_ENABLED=false`（受付停止）で、本番Origin/URLは未確定です。
+初期設定は`SUMMARY_ENABLED="false"`・`ALLOWED_ORIGINS="[]"`を維持します。
+本番設定も今回の追加時点では同じ停止状態です。本番Origin/URLは未確定です。
+有効化する際は本番設定のvarsへ確定したHTTPS OriginのJSON配列と`SUMMARY_ENABLED="true"`を設定します。
+有効なのにOrigin未設定、HTTP/localhost/loopback等の本番Origin、安全条件違反は共通検証で拒否します。
 
 ```sh
 npm run dev:gateway       # 実Gateway + mock RPC、127.0.0.1:8788
 npm run dev:gateway:rpc   # 実Gateway + 実Pricing RPC/D1/Queue、外部境界mock
-npm run build:gateway    # deploy dry-runだけ
+npm run validate:gateway       # 初期設定と本番設定を共通検証
+npm run build:gateway          # 本番用設定のdeploy dry-runだけ
+npm run build:gateway:initial  # 初期設定のdeploy dry-runだけ
 ```
 
 どちらのlocal driverも外部通信・remote resource不要、停止はCtrl+C、データは再起動で消えます。
+driverは初期設定だけを読み、localhost許可と有効フラグをローカルmemory内で設定するため、本番運用値に依存しません。
+`deploy:gateway`も本番用設定を検証してから同ファイルを明示指定します（実deployは承認後のみ）。
+本番値の変更・緊急停止は本番設定を編集し、CIを通してから反映します。停止ではOriginやlimiterを初期化しません。
+Dashboardの一時変更も本番設定へ反映しないと、次回deployでrepoの値へ戻ります。
 **[HTTP契約・接続・開発手順](docs/gateway-http.md)** /
 [契約fixture（架空テストデータ）](test/fixtures/gateway-http.json) /
 [Gateway反映・停止・rollback](docs/operations.md#gateway反映停止監視)。
