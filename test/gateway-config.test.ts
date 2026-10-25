@@ -173,7 +173,7 @@ test('build/deploy use guarded production config; CI also builds the actual init
 });
 
 test('actual validator CLI and npm gate stop invalid configuration before a MOCK deploy', { timeout: 30000 }, t => {
-  const dir = mkdtempSync(join(process.platform === 'win32' ? join(tmpdir(), 'opencode') : tmpdir(), 'pricing-gateway-config-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pricing-gateway-config-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const initial = join(dir, INITIAL_CONFIG), prod = join(dir, PRODUCTION_CONFIG), marker = join(dir, 'called');
   writeFileSync(initial, readFileSync(INITIAL_CONFIG));
