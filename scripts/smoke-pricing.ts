@@ -69,7 +69,10 @@ export async function runSmoke(input: unknown, options: Options, deps: Dependenc
       // Any connection/RPC/429/config error stops immediately; never retry it.
       const rows = summaries(await bounded(() => session!.rpc.getPriceSummaries(refs), left()), refs);
       deps.emit({ event: 'summary', call: ++calls,
-        states: rows.map(p => ({ status: p.providers.yahoo.status, stale: p.providers.yahoo.stale })) });
+        states: rows.map(p => {
+          const { status, stale, lowest_price, offer_count, fetched_at, expires_at } = p.providers.yahoo;
+          return { status, stale, lowest_price, offer_count, fetched_at, expires_at };
+        }) });
       return rows;
     };
     let rows = await read();

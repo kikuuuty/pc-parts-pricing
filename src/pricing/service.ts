@@ -13,7 +13,11 @@ export class PricingService {
     const products = validateProducts(input), now = this.now();
     const rows = new Map((await this.store.lookup(products)).map(row => [refKey(row), row]));
     const refs = uniqueRefs(products);
-    const touch = refs.filter(ref => {
+    const unregistered = refs.filter(ref => !rows.has(refKey(ref)));
+    // pending is only accepted after durable registration. If enqueue/waitUntil
+    // is interrupted, the due index can recover it without another caller.
+    if (unregistered.length) await this.store.touch(unregistered, now);
+    const touch = refs.filter(ref => rows.has(refKey(ref))).filter(ref => {
       const row = rows.get(refKey(ref));
       return row?.last_requested_at == null || row.last_requested_at <= now - POLICY.touchInterval;
     });

@@ -6,7 +6,8 @@ import { fetchYahoo, type YahooSummary } from './transport';
 import type { Log } from '../../telemetry';
 
 interface CandidateResult extends YahooSummary { fetched_at: number; expires_at: number }
-interface Admission { admit(): Promise<void>; cooldown(seconds: number): Promise<void> }
+interface Admission { admit(): Promise<void>; cooldown(seconds: number): Promise<void>;
+  failed?(): Promise<void>; succeeded?(): Promise<void> }
 export class CandidateCache {
   readonly inflight = new Map<string, Promise<CandidateResult>>();
   readonly completed = new Map<string, CandidateResult>();
@@ -78,8 +79,10 @@ export class YahooProvider implements PriceProvider {
     try { result = await fetchYahoo(this.appId, choice.value, this.log, this.fetcher, this.timeoutMs); }
     catch (error) {
       if (error instanceof RefreshError && error.reason === 'upstream_429') await this.budget.cooldown(error.retryAfter);
+      if (error instanceof RefreshError && error.reason === 'upstream_5xx') await this.budget.failed?.();
       throw error;
     }
+    await this.budget.succeeded?.();
     const fetched_at = this.now();
     const value = { ...result, fetched_at, expires_at: fetched_at + this.cfg.ttl };
     if (this.cache) {

@@ -23,6 +23,7 @@ export function harness(t: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new NodeURL('../migrations/0001_pricing.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new NodeURL('../migrations/0002_demand_warmup.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new NodeURL('../migrations/0003_provider_recovery.sql', import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
   const statements: string[] = [], logs: Event[] = [], messages: RefreshMessage[] = [];
   let time = 100 * DAY, failSql: RegExp | null = null;

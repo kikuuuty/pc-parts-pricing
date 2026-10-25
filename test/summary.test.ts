@@ -124,10 +124,13 @@ test('abandoned enqueue leases are recovered by indexed Cron without old token r
   assert.notEqual(h.messages[1].token, first.token);
 });
 
-test('D1 read errors propagate, async enqueue errors preserve cached responses', async t => {
+test('D1 read/registration errors propagate, async enqueue errors preserve registered responses', async t => {
   const h = harness(t);
   h.fail(/SELECT s\.\*/); await assert.rejects(h.read([ref()]));
   h.fail(/INSERT INTO product_price_summary/);
+  await assert.rejects(h.read([ref()]));
+  assert.equal(h.row(), undefined);
+  h.put(ref(), 'pending'); h.fail(/UPDATE product_price_summary SET/);
   assert.equal((await h.read([ref()]))[0].providers.yahoo.status, 'pending');
   await h.flush();
   assert(h.logs.some(e => e.event === 'background' && e.queue_result === 'error'));

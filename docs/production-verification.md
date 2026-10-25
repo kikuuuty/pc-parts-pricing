@@ -4,6 +4,10 @@
 実測・対象ref・ログは `.local/production-verification/`（Git除外）へ保存します。
 過去のdeployment記録、ローカル実装、今回の本番観測を別々に記載してください。
 
+以下の「今回は実行しない」は読み取り診断時の承認範囲です。後続の本番実行は、別途明示承認された
+少数RPC・修正・migration・deployの範囲で行います。プラン/保存ログAPIの権限不足だけで停止せず、
+Live tailと対象PKの前後比較を利用できます。再実行時も全試験の累積上限を維持してください。
+
 ## 1. 境界と実装経路
 
 読み取り段階では Pricing のRPCを一切呼びません。`getPriceSummaries`も

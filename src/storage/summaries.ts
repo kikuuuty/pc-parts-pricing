@@ -25,8 +25,8 @@ export class SummaryStore {
   }
   private async touchChunk(refs: ProductRef[], now: number): Promise<void> {
     await this.db.prepare(`INSERT INTO product_price_summary
-      (source,upstream_key,provider,last_requested_at,access_window_at,access_count,priority,next_refresh_at,created_at,updated_at)
-      SELECT json_extract(value,'$.source'),json_extract(value,'$.upstream_key'),'yahoo',?1,?1,1,0,?1,?1,?1
+      (source,upstream_key,provider,last_requested_at,access_window_at,access_count,priority,next_refresh_at,created_at,updated_at,queue_lane)
+      SELECT json_extract(value,'$.source'),json_extract(value,'$.upstream_key'),'yahoo',?1,?1,1,0,?1,?1,?1,'interactive'
       FROM json_each(?2) WHERE true
       ON CONFLICT(source,upstream_key,provider) DO UPDATE SET
         last_requested_at=?1,

@@ -56,6 +56,13 @@ test('Pricing smoke fresh/unsupported/empty returns do not poll', async () => {
     assert.equal(h.counts().calls, 1);
   }
 });
+test('Pricing smoke records only summary fields needed for saved-result comparison', async () => {
+  const h = harness('complete'); await runSmoke([ref()], live, h.deps);
+  const event = h.events[1] as { states: Record<string, unknown>[] };
+  assert.deepEqual(Object.keys(event.states[0]).sort(),
+    ['expires_at', 'fetched_at', 'lowest_price', 'offer_count', 'stale', 'status']);
+  assert(!JSON.stringify(event).includes(ref().upstream_key));
+});
 test('Pricing smoke stale responses continue only up to configured bound', async () => {
   const h = harness('complete', true);
   await runSmoke([ref()], { ...live, polls: 1 }, h.deps); assert.equal(h.counts().calls, 2);

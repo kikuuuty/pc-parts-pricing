@@ -6,8 +6,9 @@
 ## Durable enqueue / execution
 
 ```text
-summary read ── waitUntil ── conditional touch
-                          └─ conditional UPDATE ... RETURNING (claim)
+summary read ── await registration of unknown refs ── pending/cache response
+              └─ waitUntil ── conditional touch of existing rows
+                            └─ conditional UPDATE ... RETURNING (claim)
                                └─ reserve daily queue budget ── sendBatch
 
 Queue ── latest row/token check ── execution lease
@@ -25,7 +26,8 @@ consumerはqueue tokenとrun tokenの両方で保存をfenceします。古いde
 
 |境界|復旧|
 |---|---|
-|未登録refへの最初のwaitUntilがtouch前に中断|次回閲覧で再登録|
+|未登録refの登録失敗|RPCはPRICING_UNAVAILABLE。pending受理成功と扱わない|
+|登録後、waitUntilのenqueue前に中断|due indexからCronが回収。新規要求はinteractive laneを保持|
 |pending行登録後に中断|due indexからCronが回収|
 |claim後、send前に中断|25h leaseが切れるとCronが新tokenで再投入|
 |sendの成否不明|leaseを条件付き解放して15分backoff。旧tokenのdeliveryは無効化、すでに実行中ならrun tokenにより解放を抑止|
@@ -45,12 +47,24 @@ claim後の障害では一時的にpendingのまま長く待つ場合があり�
 - エラー時に`status/lowest_price/offer_count/fetched_at/expires_at`を変更しません。
 - 失敗回数を最大16で保持。`max(Retry-After, min(6h, 15min × 2^failure_count))`で延期。
 - 429はProvider共通の`next_allowed_at`にも反映。日次予算超過は次のUTC日まで延期。
+- 実HTTPの連続5xxは共有D1 healthで数える。単発500を利用規制とは断定しない。
+  2回目から共有cooldownを60秒→120秒→…→最大30分へ延長し、別製品/laneの検索も止める。
+  429/cooldown後は10秒pacingで3実HTTP成功を確認して通常pacingへ戻す。
+  古いinflight成功では新しい障害を解除しない。候補cache hitや個別応答不備はhealthを解除/加算しない。
+  製品のbackoffとdue indexを維持するため、手動replayなしで再開する。
 - Queue日次予算はclaimされた件数だけ予約。send障害時に返却しません（安全側の過大計上）。
   残予算がbatch件数より小さいとbatch全体を翌日に延期するため、上限直前で未使用枠が残ることがあります。
 - Providerの日次予算は成功数ではなく実検索の開始許可数。0件/429/5xxも1回を消費します。
 - 固定60秒窓はrolling windowではありません。pacing/429 cooldownと合わせた保守的な上限です。
 - minute/pacingだけの待機はconsumer内で実行（製品全体deadline240秒、1候補最大6 gate試行）。
-  実行lease300秒、D1障害のnative retry360秒。日次枠不足・長いcooldownは従来のbackoff＋Cron回収です。
+  10秒以下の共有待機もconsumer内で待つ。実行lease300秒、D1障害のnative retry360秒。
+  日次枠不足・長いcooldownはbackoff＋Cron回収です。
+
+Yahoo公式の[itemSearch v3](https://developer.yahoo.co.jp/webapi/shopping/v3/itemsearch.html)は
+1クエリー/秒と429、[Shopping FAQ](https://developer.yahoo.co.jp/webapi/shopping/faq.html)は
+短時間規制で500を返しアクセスを控えると解除する旨を案内しています（規制条件は非公開）。
+Pricingの30/分・1500/日・lane枠・5xx閾値は独自の安全設定で、Yahoo公式quotaではありません。
+他Workerが同じアプリIDを使う場合、このD1 gateでは合算制御できません。
 
 ## Priority / starvation
 
@@ -123,6 +137,8 @@ DLQ自動replay・強制lease解除用の公開/管理RPCは初版にはあり�
 
 ## Schema / policy upgrades
 
+- `0003_provider_recovery.sql`は固定件数のwork_budgetに共有health列だけを追加します。
+  summary・lease・予算消費を保持し、先にmigration、その後Worker deployの順で適用します。
 - 現在値tableには世代ごとの行を増やしません。主キーはdurable pair + provider。
 - identifier選択/正規化の破壊的変更では`src/providers/yahoo/service.ts`のcache path generationを更新。
 - 既存product summaryを即座に無効化する自動機能はありません。必要なら別migration/限定管理ジョブで

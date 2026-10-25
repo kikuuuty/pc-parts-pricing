@@ -66,7 +66,8 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   t.after(async () => { releaseProvider(); await mf.dispose(); });
   const db = await mf.getD1Database('DB', 'pricing');
   // Execute the actual migration as individual statements in one D1 batch.
-  const migration = readFileSync('migrations/0001_pricing.sql', 'utf8') + '\n' + readFileSync('migrations/0002_demand_warmup.sql', 'utf8');
+  const migration = ['0001_pricing.sql', '0002_demand_warmup.sql', '0003_provider_recovery.sql']
+    .map(name => readFileSync(`migrations/${name}`, 'utf8')).join('\n');
   await db.batch(migration.replace(/--[^\n]*/g, '').split(';').map(sql => sql.trim()).filter(Boolean).map(sql => db.prepare(sql)));
   const rpc = async (path: string, input: unknown) => {
     const response = await mf.dispatchFetch(`https://test.internal${path}`, {

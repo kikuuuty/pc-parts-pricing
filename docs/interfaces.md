@@ -51,7 +51,9 @@ Workerのメモリ/serialization/subrequest上限は有効です。Service Bindi
 - completeは正の価格/件数、emptyは価格null/件数0、unsupported/missingは価格null/件数0、pendingは価格/件数null。
 - expires_atはpendingでも古いexpiryを返すことがあります。期限を超えて表示から隠した結果の診断用で、freshness判定をUIへ委譲しません。
 - D1読取障害をpendingへ偽装しません。RPC全体が`PRICING_UNAVAILABLE`です。
-- backgroundのtouch/enqueue障害はRPC成功結果を変えません。telemetryへ記録し、次の閲覧/Cronで再試行します。
+- 未登録refはpending応答前にD1へ永続登録します。登録失敗は`PRICING_UNAVAILABLE`です。
+  登録済みならcallerがpollingを止めても、enqueue失敗・予算待ちはdue indexからCronが回収します。
+- 既存行のbackground touch/enqueue障害はRPC成功結果を変えません。telemetryへ記録し、Cronで再試行します。
 
 ### `requestRefresh(products)`
 

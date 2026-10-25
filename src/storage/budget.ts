@@ -24,6 +24,7 @@ export async function reserveQueue(db: D1Database, count: number, now: number, l
 
 export class YahooBudget {
   private deadline: number;
+  private admittedAt = 0;
   constructor(private db: D1Database, private cfg: Config, private log: Log,
     private now = Date.now, private sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
     private lane: Lane = 'interactive') { this.deadline = now() + 240_000; }
@@ -35,7 +36,8 @@ export class YahooBudget {
       const now = this.now(), day = Math.floor(now / DAY), minute = Math.floor(now / 60_000);
       const accepted = await this.db.prepare(`UPDATE work_budget SET day=?1,minute=?2,
         day_count=CASE WHEN day=?1 THEN day_count+1 ELSE 1 END,
-        minute_count=CASE WHEN minute=?2 THEN minute_count+1 ELSE 1 END,next_allowed_at=?3,
+        minute_count=CASE WHEN minute=?2 THEN minute_count+1 ELSE 1 END,
+        next_allowed_at=MAX(?3,?4+CASE WHEN recovery_remaining>0 THEN 10000 ELSE 0 END),
         background_day_count=CASE WHEN day=?1 THEN background_day_count ELSE 0 END+?7,
         background_minute_count=CASE WHEN minute=?2 THEN background_minute_count ELSE 0 END+?7
         WHERE name='yahoo' AND next_allowed_at<=?4
@@ -47,6 +49,7 @@ export class YahooBudget {
           this.lane === 'background' ? 1 : 0, laneLimit(this.cfg.yahooDaily, this.lane, 'day'),
           laneLimit(this.cfg.yahooMinute, this.lane, 'minute')).first();
       if (accepted) {
+        this.admittedAt = now;
         this.log({ event: 'provider', provider: 'yahoo', rate_limit_status: 'allowed' });
         return;
       }
@@ -57,7 +60,7 @@ export class YahooBudget {
       const daily = state.day === day && (state.day_count >= this.cfg.yahooDaily || laneDay >= laneLimit(this.cfg.yahooDaily, this.lane, 'day'));
       const minutely = state.minute === minute && (state.minute_count >= this.cfg.yahooMinute || laneMinute >= laneLimit(this.cfg.yahooMinute, this.lane, 'minute'));
       const wait = Math.max(1, state.next_allowed_at - now);
-      const status = daily ? 'daily' : wait > this.cfg.pacing ? 'cooldown' : minutely ? 'minute' : 'pacing';
+      const status = daily ? 'daily' : wait > Math.max(this.cfg.pacing, 10000) ? 'cooldown' : minutely ? 'minute' : 'pacing';
       this.log({ event: 'provider', provider: 'yahoo', rate_limit_status: status });
       const until = daily ? nextDay(now) : Math.max(state.next_allowed_at, minutely ? (minute + 1) * 60_000 : now + wait);
       if (daily || status === 'cooldown' || attempt === 5 || until > this.deadline) {
@@ -68,7 +71,26 @@ export class YahooBudget {
   }
 
   async cooldown(seconds: number): Promise<void> {
-    await this.db.prepare("UPDATE work_budget SET next_allowed_at=MAX(next_allowed_at,?) WHERE name='yahoo'")
-      .bind(this.now() + seconds * 1000).run();
+    await this.db.prepare(`UPDATE work_budget SET next_allowed_at=MAX(next_allowed_at,?),
+      recovery_remaining=3,failure_at=? WHERE name='yahoo'`)
+      .bind(this.now() + seconds * 1000, this.now()).run();
+  }
+
+  async failed(): Promise<void> {
+    // A lone 5xx is not proof of throttling. Repeated provider-wide failures open
+    // a shared circuit; no product error or candidate cache hit enters this path.
+    await this.db.prepare(`UPDATE work_budget SET failure_streak=MIN(failure_streak+1,16),
+      failure_at=?1,recovery_remaining=CASE WHEN failure_streak>=1 THEN 3 ELSE recovery_remaining END,
+      next_allowed_at=CASE WHEN failure_streak>=1 THEN MAX(next_allowed_at,
+        ?1+MIN(1800000,60000*(1 << MIN(failure_streak-1,5)))) ELSE next_allowed_at END
+      WHERE name='yahoo'`).bind(this.now()).run();
+  }
+
+  async succeeded(): Promise<void> {
+    // A request admitted before a newer failure cannot close its circuit.
+    await this.db.prepare(`UPDATE work_budget SET
+      failure_streak=CASE WHEN recovery_remaining<=1 THEN 0 ELSE failure_streak END,
+      recovery_remaining=MAX(0,recovery_remaining-1)
+      WHERE name='yahoo' AND failure_at<=?`).bind(this.admittedAt).run();
   }
 }
