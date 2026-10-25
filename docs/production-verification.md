@@ -10,8 +10,8 @@ Live tailと対象PKの前後比較を利用できます。再実行時も全試
 
 ## 1. 境界と実装経路
 
-読み取り段階では Pricing のRPCを一切呼びません。`getPriceSummaries`も
-`waitUntil`内でD1 touch/claim/Queue投入を行います。`requestRefresh`、管理RPC、
+読み取り段階では Pricing のRPCを一切呼びません。`getPriceSummaries`も未登録refを応答前にD1へ永続登録し、
+既存行のD1 touch/claim/Queue投入を`waitUntil`内で行います。公開Gatewayのsummary POSTも同じ副作用を持ちます。`requestRefresh`、管理RPC、
 Cron手動実行、Queue pull/ack/purge/replay、Yahoo smokeも実行禁止です。
 デプロイ・migration・設定変更・Secret値の取得も行いません。
 

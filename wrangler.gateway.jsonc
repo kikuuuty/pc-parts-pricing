@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pc-parts-pricing-gateway",
+  "main": "src/gateway/worker.ts",
+  "compatibility_date": "2026-09-26",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [],
+  "services": [{ "binding": "PRICING", "service": "pc-parts-pricing", "remote": false }],
+  "ratelimits": [
+    { "name": "CLIENT_LIMITER", "namespace_id": "2026102501", "simple": { "limit": 12, "period": 60 } },
+    { "name": "GLOBAL_LIMITER", "namespace_id": "2026102502", "simple": { "limit": 60, "period": 60 } },
+    { "name": "LARGE_CLIENT_LIMITER", "namespace_id": "2026102503", "simple": { "limit": 2, "period": 60 } },
+    { "name": "LARGE_GLOBAL_LIMITER", "namespace_id": "2026102504", "simple": { "limit": 6, "period": 60 } }
+  ],
+  "vars": { "ALLOWED_ORIGINS": "[]", "SUMMARY_ENABLED": "false" },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+}

@@ -6,13 +6,17 @@
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
+    "dev:gateway": "tsx scripts/dev-gateway.ts",
+    "dev:gateway:rpc": "tsx scripts/dev-gateway.ts --rpc",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "check": "npm run typecheck && npm test",
     "db:migrate": "wrangler d1 migrations apply pc-parts-pricing --local",
     "db:migrate:remote": "wrangler d1 migrations apply pc-parts-pricing --remote",
     "build": "wrangler deploy --dry-run --outdir dist",
+    "build:gateway": "wrangler deploy --config wrangler.gateway.jsonc --dry-run --outdir dist/gateway",
     "deploy": "wrangler deploy",
+    "deploy:gateway": "wrangler deploy --config wrangler.gateway.jsonc",
     "smoke:yahoo": "tsx scripts/smoke-yahoo.ts",
     "smoke:pricing": "tsx scripts/smoke-pricing.ts"
   },

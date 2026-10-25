@@ -199,3 +199,82 @@ rollbackはまずproducer/consumer状況を確認し、追加Queueの処理を�
   coalescing、Cache API障害、D1共有pacing・minute/day予算、Catalog rebuild競合を検証。
 
 本番CPU時間・account usageの負荷試験、Cloudflareの実配信における長時間backlog/障害注入、実Yahoo smokeは未実施です。
+
+## Gateway反映・停止・監視
+
+公開HTTP契約・ローカル起動は[gateway-http.md](gateway-http.md)を参照。
+以下は**手順のみ**で、Gateway本番deploy、remote migration、本番API試験の実行記録ではありません。
+いずれも明示承認後に実行します。過去のVersion/migration記録を現在値と推測しないでください。
+
+### 反映手順（承認後）
+
+1. Pricingの稼働Versionと対象commitを照合。
+   `npx wrangler deployments status --json`、`npx wrangler versions view <CURRENT_VERSION> --json`などで
+   Version annotation/commitとbindingを確認します。対応が不明なら不明と記録し、過去の稼働記録だけで判断しません。
+   現行コードの未登録ref永続登録・Provider復旧制御を含むcommitに揃える必要があります。
+2. `npx wrangler d1 migrations list pc-parts-pricing --remote`で既存0001/0002/**0003_provider_recovery.sql**の適用状態を確認。
+   0003は現行Provider health/recoveryに必要です。未適用なら別途承認された範囲で
+   `npm run db:migrate:remote`、必要なPricing本体更新（`npm run deploy`）の順で反映。
+   既存DB UUID・Queue・DLQ・Cron・Secretは維持し、作り直しません。Gateway専用migrationはありません。
+3. `npm run check`、`npm run build`、`npm run build:gateway`を確認。
+   `wrangler.jsonc`は本体、`wrangler.gateway.jsonc`は公開Gateway。
+   GatewayにD1/Queue/Cron/Catalog/Yahoo Secret、PricingAdmin/PricingBatchがないことを確認。
+4. Gatewayの`PRICING`が同一accountの`pc-parts-pricing` default entrypointを指すことを確認。
+   `ALLOWED_ORIGINS`を確定したSheetのscheme/host/portのJSON配列に設定（localhostや`*`を本番へ混ぜない）。
+   4つのnamespaceがaccount内の他Workerと衝突しないこと、12/60/2/6 requests per 60秒を確認。
+   local Catalog設定の29599001〜29599007 / 29599101〜29599107とは非衝突を確認済みですが、account全体の確認は別途必要です。
+   `SUMMARY_ENABLED=false`のまま`npm run deploy:gateway`で先に安全に配置し、設定確認後にtrueへ変更して再反映。
+   workers.devによる公開を想定し、`preview_urls:false`を維持。実際のURLはdeploy出力/設定で確認し、推測しません。
+   Dashboard変更は次のdeployでrepoのvarsに上書きされるため、実際に運用する設定へ揃えます。Secretは複製しません。
+5. **本番試験も承認後のみ**、Catalogで存在を確認した少数の実在refで限定疎通。
+   テストfixture/説明用keyは本番へ送信しません。未登録ならD1書込・非同期Queueを起こすことを前提に、試験件数とpoll回数を事前制限。
+   CORS、200/pending→後続結果、no-store/request ID、D1/Queue/Provider予算を観測。100件/全Catalog warmupや負荷試験は行いません。
+6. 実Gateway URL、許可Origin、稼働commit/Version、HTTP契約とfixtureのpath、有限polling指針をSheet実装者へ引き渡します。
+   Sheet/Catalogのコード・環境変数の変更は別タスクです。
+
+### 緊急停止・縮小・rollback
+
+- `SUMMARY_ENABLED=false`をGatewayへ反映するとPOSTは503、RPCを呼びません。
+  例（承認後）: `npm run deploy:gateway -- --var SUMMARY_ENABLED:false`。
+  true以外の値/必須設定不備でもfail closedです。既に受理したRPC・Queueは取り消されません。
+- 停止はGatewayだけです。Pricing本体のCron、両Queue、予算、lease/fencingを変更・停止しません。
+- 縮小はGateway設定のnative `simple.limit`を下げて再反映。通常/大batchの両方を確認。
+  60秒periodとRetry-After:60を合わせたまま運用します。Provider/Queue予算やbackoffを緩めないでください。
+- `ALLOWED_ORIGINS=[]`だけではOriginなしclientを停止できません。全受付停止には必ずSUMMARY_ENABLEDを使います。
+- GatewayだけのrollbackはCloudflare deploymentsで既知の安全なGateway Versionへ戻します。
+  rollback先の許可Origin・受付フラグ・limiter・PRICINGも復元されるので再確認。必要なら停止版をforward deployする方が安全です。
+  初回導入なら停止設定で置くか公開route/workers.devをGatewayだけ無効化。本体/D1/Queue/Secretは削除しません。
+  本体のrollbackは既存schema/Queue互換性の運用手順に従う別操作です。
+
+### ログと監視
+
+Gateway JSON logは`request_id`, 固定`route`（またはunmatched）, `status`, `batch_count`, `duration_ms`,
+`limiter`（not_checked/allowed/denied/unavailable）, 固定`error_code`だけ。
+batch_countは未解析・受付前拒否では0（有効batch件数を知ってから記録）。
+raw IP/hash、全ref一覧、body、製品名、価格、Secret、例外本文/stackをapplication logへ出しません。
+Cloudflare自動request logのURL等は別機能なので、保存範囲・アクセス権・retentionも確認してください。
+Gateway設定のinvocation samplingは10%。小規模試験ではlog欠落があり得るため、HTTP status/request IDとmetricsも併用します。
+
+- Workers Logs/Tracesで429・503比率、limiter unavailable、latencyを確認。native limiter単独のDashboard表示に依存しません。
+- request IDはGatewayのHTTP応答/ログを照合するIDです。既存Pricing内部へ伝播する分散trace IDではありません。
+- D1 Dashboardでread/write、DB size、index込みwrite増加を監視。warm readでも時間bucket touch、新規refなら同期登録がある点に注意。
+- Queue Dashboardでbacklog、oldest age、retry、DLQを確認。Pricing logsのsummary status/pending率と組み合わせ、pending滞留の原因を調査。
+  必要なD1の限定読取は[production-verification.md](production-verification.md)に従います。全表scanやAPIを使った観測の連打は避けます。
+- 503はbinding/flag/Origin設定、Pricing稼働Version、0003適用、D1予算/障害、limiter障害を確認。
+  原因をpendingやemptyへ置換したり、Gatewayで無条件retryして隠したりしません。
+- 任意ref登録によるD1 writeをQueue/Yahoo日次予算では止められません。
+  Gateway native limiterも**拠点別・eventually consistentの近似値**で、分散濫用やFree枠超過を完全には防げません。
+  共有keyの1680 ref/分/拠点という名目上限を全世界予算・日次安全枠と説明しないでください。
+  使用量増加時は早期に受付縮小/停止し、必要なら別途認証や厳密な予算方式を検討します（今回新DB/DOは追加しません）。
+- **暫定構成の制約:** 旧Catalog Offer APIのYahooアクセスはPricing側D1予算と別です。
+  同じアプリIDを使う場合も合算保護はできません。CatalogのYahoo機能/Secretは今回削除・変更していません。
+
+### Gatewayローカル検証記録（2026-10-25）
+
+- `npm run check`: 型検査とoffline全168テスト成功、failure/skip 0。
+- `npm run build` / `npm run build:gateway`: 両Workerのdeploy dry-run成功。実deployではありません。
+- mock HTTP契約、実loopback HTTP client、native limiterの429、実Service Binding RPC/D1/Queue、
+  Provider待機中の先行pending、永続登録、後続complete、重複enqueue抑制、D1障害503、既存601件RPCを検証。
+- CI設定へGateway buildを追加。GitHub Actionsの実行結果はこのローカル検証記録に含みません。
+- 本番deploy、remote migration、本番API/実Yahoo試験は未実施（未承認）。
+  Pricing本体のコード/設定/migration、およびSheet/Catalogのコードは変更していません。

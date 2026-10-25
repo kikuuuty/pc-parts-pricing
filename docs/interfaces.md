@@ -14,7 +14,7 @@ RPC引数・返却値はplain dataのみで、RPC target/streamは返しませ�
 
 ### `getPriceSummaries(products)`
 
-入力: `ProductRef[]`、1件以上。UI固有の20件上限・Gateway候補の100件上限はPricingに設けません。
+入力: `ProductRef[]`、1件以上。UI固有の20件上限・公開Gatewayの100件上限はPricingに設けません。
 
 ```ts
 type ProductRef = { source: string; upstream_key: string };
@@ -142,16 +142,17 @@ resolve/detail競合で別のdurable製品が返ればerror。類似SKUへの置
 完全offlineでは`npm test`がmemory上のcaller、Pricing、mock Catalog/Yahoo、実D1/Queueを起動します。
 テスト用HTTP driverは`test/runtime.test.ts`内のみで、本番bundleには含まれません。
 
-## 次フェーズ: pricing-gateway / pc-build-sheet
+## 公開Gateway / 次フェーズpc-build-sheet
 
 ### Gateway
 
-- PricingへのService Bindingを持つ薄い公開Workerを追加。
-- browser用HTTP batch endpointで最大100件程度を候補とし、body size、CORS、request rate limitを制御。
-- RPCの`ok`/error codeをHTTPへ変換し、`Cache-Control: no-store`等を付与。
-- `getPriceSummaries`のinteractive refreshを利用し、Provider完了待ちのAPIへ変換しない。
-- Secretや`PricingAdmin` / `PricingBatch` bindingをgatewayへ渡さない。
-- 将来の公開負荷に応じて認証・account内D1予算の保護を実装。
+同repoの別Worker `pc-parts-pricing-gateway`を追加しました。
+通常の`PRICING → pc-parts-pricing`だけをbindingし、`POST /v1/prices/summary`で1〜100件/64KiBを受け付けます。
+本体の`getPriceSummaries`を1回awaitし、Provider完了は待ちません。CORS、native client/共有/大batch制限、受付停止設定を備えます。
+Secretや`PricingAdmin` / `PricingBatch`、D1/Queue/Cron/Catalog bindingはありません。
+**[HTTP契約、エラー、接続設定、ローカル起動](gateway-http.md)**と
+[`test/fixtures/gateway-http.json`](../test/fixtures/gateway-http.json)をSheet実装の契約として参照してください。
+本番Origin/URLは未確定、既定では受付停止です。デプロイ済みを意味しません。
 
 ### Build Sheet
 
@@ -162,7 +163,8 @@ resolve/detail競合で別のdurable製品が返ればerror。類似SKUへの置
 - pendingは「未取得/更新待ち」、emptyは「販売情報なし」、unsupported/missingを分ける。
 - pending/staleがある場合、Gateway経由でsummaryのみを間隔・回数を制御してpolling。
   毎回`requestRefresh`を別途呼ぶ必要はありません。Pricingのlease/fresh/backoffが重複enqueueと再検索を抑制します。
-- 表示: fresh→価格、stale→旧価格＋更新中、pending→価格取得中、empty→取扱情報なし、unsupported→価格取得非対応。
+- 表示: fresh→価格、stale→旧価格＋取得時刻（現在更新中・完了時刻の保証なし）、pending→未取得/更新待ち、empty→取扱情報なし、unsupported→価格取得非対応。
+  pending/staleのpollingは有限にし、unsupported/missingはstaleだけで無限pollingしません。
 - 市場summaryの非同期変化で、手入力済み構成価格を上書きしない。
 - 既存の店舗比較popoverはOffer配列を必要とするため、このsummaryだけでは移行できない。
   個別Offer APIを別途設計してからCatalog側Yahoo機能/Secretの退役を検討する。

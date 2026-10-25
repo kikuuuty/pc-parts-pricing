@@ -1,0 +1,5 @@
+{
+  "products": [
+    { "source": "buildcores", "upstream_key": "CPU/test-fixture" }
+  ]
+}

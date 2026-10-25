@@ -1,13 +1,13 @@
 # PC Parts Pricing
 
-PCパーツの**現在の価格summaryをD1へキャッシュし、Queueで非同期更新する非公開Cloudflare Worker**です。
+PCパーツの**現在の価格summaryをD1へキャッシュし、Queueで非同期更新する非公開Cloudflare Worker**と、別Workerの公開HTTP Gatewayです。
 需要駆動で、**ユーザー要求 > default-page warmup > 最近参照された製品 > cold**を優先します。
 summaryはD1から返し、Yahoo!ショッピングの検索完了を待ちません。UIページサイズに依存しません。
 
 ```text
 pc-build-sheet (UI)
-    │ HTTPS                 ※ gateway/UI接続は次フェーズ
-pricing-gateway
+    │ HTTPS                 ※ UI接続は次フェーズ
+pc-parts-pricing-gateway
     │ Service Binding / RPC
 pc-parts-pricing
     ├─ D1: current summary / lease / budgets
@@ -33,7 +33,7 @@ Catalog/Build Sheetのファイルはこの実装で変更していません。�
 ## 非公開Worker / RPC
 
 `wrangler.jsonc`で **`workers_dev: false`、`preview_urls: false`、`routes: []`**。
-Custom Domainも設定しません。HTTPの`fetch()`は404のみ。公開REST APIやブラウザ用CORSはありません。
+本体にCustom Domainも設定しません。HTTPの`fetch()`は404のみ。本体には公開REST APIやブラウザ用CORSはありません。
 Cloudflareの現在の `WorkerEntrypoint` RPCを使い、同一accountの別Workerから呼び出します。
 `preview_urls`は現在「Version URLs」と呼ばれるURLを無効化する設定です。
 
@@ -60,11 +60,32 @@ const refresh = await env.PRICING.requestRefresh(products);
 成功は`{ ok: true, data: ... }`、失敗は`{ ok: false, error: { code } }`。
 codeは`INVALID_REQUEST`または`PRICING_UNAVAILABLE`。例外本文・stack・Secretは返しません。
 入力は**1件以上**、各要素は`source`と`upstream_key`だけです。numeric product IDは受け付けません。
-**20 = 現在のUI、100 = 将来Gatewayの上限候補、Pricing内部 = UI上限非依存**です。
+**20 = 現在のUI、100 = 公開Gatewayの上限、Pricing内部 = UI上限非依存**です。
 全入力検証→全体dedupe→250件の内部RPC→50件のSQL/Queue chunk→入力順・重複の復元。
 250はD1 invocation予算、50はSQL/送信の作業単位で、受付上限ではありません。601件の実workerd RPCも検証します。
 単一RPCのメモリ/serialization/Service Binding連鎖上限は残るため、巨大な全件importは呼出元で分割・再開してください。
 詳細・型・gateway連携は[RPC / Catalog境界](docs/interfaces.md)を参照してください。
+
+### 公開HTTP Gateway
+
+別設定`wrangler.gateway.jsonc`の`pc-parts-pricing-gateway`だけがHTTPを公開します。
+`POST /v1/prices/summary`、1〜100 ref、64KiB、CORS完全一致allowlist、native Rate Limiting。
+通常枠は12/client/分・60/共有/分、21件以上は追加で2/client/分・6/共有/分です。
+制限は拠点ごとの近似値であり、無料枠や全世界日次予算を保証しません。
+Gatewayは`PRICING`通常RPCのみ使用し、D1/Queue/Cron/Catalog/Secret/管理bindingを持ちません。
+既定は`SUMMARY_ENABLED=false`（受付停止）で、本番Origin/URLは未確定です。
+
+```sh
+npm run dev:gateway       # 実Gateway + mock RPC、127.0.0.1:8788
+npm run dev:gateway:rpc   # 実Gateway + 実Pricing RPC/D1/Queue、外部境界mock
+npm run build:gateway    # deploy dry-runだけ
+```
+
+どちらのlocal driverも外部通信・remote resource不要、停止はCtrl+C、データは再起動で消えます。
+**[HTTP契約・接続・開発手順](docs/gateway-http.md)** /
+[契約fixture（架空テストデータ）](test/fixtures/gateway-http.json) /
+[Gateway反映・停止・rollback](docs/operations.md#gateway反映停止監視)。
+実装・ローカル検証と、本番deploy/本番動作確認は別です。Gatewayの本番変更はこの追加では実行していません。
 
 ```json
 {
@@ -110,7 +131,7 @@ codeは`INVALID_REQUEST`または`PRICING_UNAVAILABLE`。例外本文・stack・
 
 ## D1 schema
 
-Migration: [`0001_pricing.sql`](migrations/0001_pricing.sql) + [`0002_demand_warmup.sql`](migrations/0002_demand_warmup.sql)。0001は変更しません。
+Migration: [`0001_pricing.sql`](migrations/0001_pricing.sql) + [`0002_demand_warmup.sql`](migrations/0002_demand_warmup.sql) + [`0003_provider_recovery.sql`](migrations/0003_provider_recovery.sql)。既存migrationは変更しません。Gateway追加の新migrationはありません。
 
 - `product_price_summary`: **PRIMARY KEY `(source, upstream_key, provider)` WITHOUT ROWID**。
   status、lowest_price、offer_count、fetched_at、expires_at、last_requested_at、next_refresh_at、created_at、updated_at。
@@ -196,7 +217,7 @@ Catalog mainは30カテゴリ。既定N=20で最大600 unique refs（重複が�
 Catalog API/exportから得たdurable refsを`seedWarmup(refs)`へ渡せます。600件以上も内部chunk処理します。
 このRPCはpending行を重複なしで登録するだけで、Yahoo検索・即時enqueue・アクセス頻度の水増しはしません。
 Cronが低優先度で取得します。初版はこの登録境界を提供し、全catalog巡回/import自動化は未実装です。
-管理bindingを将来の公開gatewayには渡さないでください。[登録例](docs/interfaces.md#管理rpcとcold-warmup)
+管理bindingを公開Gatewayには渡さないでください。[登録例](docs/interfaces.md#管理rpcとcold-warmup)
 
 ## Yahoo Provider
 
@@ -385,7 +406,7 @@ SQLiteのquery planテストでもPK lookupとCronのrange indexを検証しま�
   **100,000 rows written/日**へ近づく主要要因です。これらは設計概算で本番課金値ではありません。
 - fresh価格の再保存なし。アクセス記録は時間単位。Cronは最大6 bounded index queryで候補を選びます。
 - **Free運用を無条件に保証するものではありません。** D1のindex更新もrows writtenに数えられ、Catalog等とaccount枠を共有します。
-  任意refの大量閲覧/登録はアクセス行writeを増やします。将来gateway側にも認証/入力検証・request rate limitが必要です。
+  任意refの大量閲覧/登録はアクセス行writeを増やします。Gatewayの入力検証・近似rate limitでも分散濫用や日次超過を完全には防げません。
   目安として20件×1000ページ/日でも同期readは最大約4万行/日ですが、書込・index・Queue関連は別途計測してください。
 - D1上限到達時はRPC `PRICING_UNAVAILABLE`、Queueはretry、Cronは次回へ。実稼働のCPU p95/p99、rows written、Queue backlogを監視し、
   上限へ近づく前にCron/Provider予算を下げるかPaidへ移行します。Freeの10ms CPUはローカルテストだけでは保証できません。
@@ -411,6 +432,7 @@ DB側の`last_error`にも固定reasonだけ保存します。D1使用量・Queu
 
 ```text
 src/worker.ts              private RPC / Queue / Cron entrypoints
+src/gateway/               separate public HTTP / CORS / native admission limits
 src/pricing/              common model / freshness / batch service
 src/storage/              D1 summaries / durable budgets
 src/catalog/              resolve + detail Service Binding adapter
@@ -422,9 +444,9 @@ test/                     offline regression + real workerd integration
 docs/                     interface / operations
 ```
 
-未実装: 価格履歴、Rakuten、公開pricing-gateway、Build Sheet接続、個別店舗Offer配信、全catalogの自動列挙・完全warmup、
+未実装: 価格履歴、Rakuten、Build Sheet接続、個別店舗Offer配信、全catalogの自動列挙・完全warmup、
 Catalog更新イベントによる即時無効化、isolate間の候補coalescing、DLQ自動replay。
 需要駆動refreshのproduction deployは完了しています。新versionの実Yahoo smoke・負荷試験は未実施です。
 
-次フェーズではgatewayで公開HTTPとRPCを仲介し、Build Sheetのnumeric ID summary入力をdurable refsへ変更します。
+次フェーズでは追加したGatewayへ接続し、Build Sheetのnumeric ID summary入力をdurable refsへ変更します。
 検索1ページにつき1bulk request、stale表示、遅延価格による手入力価格の非上書き、既存店舗比較経路の扱いを合わせて実装してください。

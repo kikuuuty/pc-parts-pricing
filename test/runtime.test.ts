@@ -10,11 +10,20 @@ import type { ProductSummary } from '../src/pricing/model';
 test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked external boundaries', { timeout: 60000 }, async t => {
   const bundle = await build({ entryPoints: ['src/worker.ts'], bundle: true, write: false, format: 'esm',
     platform: 'browser', external: ['cloudflare:workers'] });
+  const gateway = await build({ entryPoints: ['src/gateway/worker.ts'], bundle: true, write: false, format: 'esm', platform: 'browser' });
+  const gatewayConfig = JSON.parse(readFileSync('wrangler.gateway.jsonc', 'utf8'));
   let providerCalls = 0, catalogCalls = 0, releaseProvider!: () => void;
   const providerBlocked = new Promise<void>(resolve => { releaseProvider = resolve; });
   const mf = new Miniflare(convertV4MiniflareOptions({
     log: new Log(LogLevel.ERROR), cf: false,
     workers: [
+      {
+        name: 'gateway', modules: true, compatibilityDate: '2026-09-26', script: gateway.outputFiles[0].text,
+        bindings: { ALLOWED_ORIGINS: '["http://localhost:5173"]', SUMMARY_ENABLED: 'true' },
+        serviceBindings: { PRICING: 'pricing' },
+        ratelimits: Object.fromEntries(gatewayConfig.ratelimits.map((r: any) => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
+        outboundService: () => { throw new Error('Gateway must not access the Internet'); },
+      },
       {
         name: 'probe', modules: true, compatibilityDate: '2026-09-26',
         serviceBindings: { PRICING: 'pricing', ADMIN: { name: 'pricing', entrypoint: 'PricingAdmin' } },
@@ -69,17 +78,28 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   const migration = ['0001_pricing.sql', '0002_demand_warmup.sql', '0003_provider_recovery.sql']
     .map(name => readFileSync(`migrations/${name}`, 'utf8')).join('\n');
   await db.batch(migration.replace(/--[^\n]*/g, '').split(';').map(sql => sql.trim()).filter(Boolean).map(sql => db.prepare(sql)));
+  const probe = await mf.getWorker('probe');
   const rpc = async (path: string, input: unknown) => {
-    const response = await mf.dispatchFetch(`https://test.internal${path}`, {
+    const response = await probe.fetch(`https://test.internal${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
     });
     return response.json() as Promise<{ ok: boolean; data: ProductSummary[] & { registered: number; enqueued: number }; error?: { code: string } }>;
   };
-  const first = await rpc('/summary', [ref(1), ref(2), ref(1)]);
+  const http = async (products: unknown, expected = 200) => {
+    const response = await mf.dispatchFetch('http://gateway.test/v1/prices/summary', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://localhost:5173' }, body: JSON.stringify({ products }),
+    });
+    assert.equal(response.status, expected);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
+    return response.json() as Promise<{ ok: boolean; data: ProductSummary[]; error?: { code: string } }>;
+  };
+  const first = await http([ref(1), ref(2), ref(1)]);
   assert.equal(first.ok, true);
   assert(first.data.every(p => p.providers.yahoo.status === 'pending'));
-  // The response arrived while Yahoo is deliberately blocked.
-  releaseProvider();
+  // Actual HTTP -> Service Binding -> PricingBatch -> D1 registration completed
+  // before pending was returned. Yahoo cannot finish until explicitly released.
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM product_price_summary').first<{ n: number }>())!.n, 2);
   const waitFor = async (condition: () => Promise<boolean>) => {
     for (let i = 0; i < 100; i++) {
       if (await condition()) return;
@@ -87,11 +107,19 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
     }
     assert.fail('Queue did not finish');
   };
+  await waitFor(async () => providerCalls === 1);
+  await waitFor(async () => (await db.prepare("SELECT day_count FROM work_budget WHERE name='queue'").first<{ day_count: number }>())!.day_count === 2);
+  assert((await http([ref(1), ref(1)])).data.every(p => p.providers.yahoo.status === 'pending'));
+  // Active interactive lease + recent touch means no further enqueue is needed.
+  assert.equal((await db.prepare("SELECT day_count FROM work_budget WHERE name='queue'").first<{ day_count: number }>())!.day_count, 2);
+  assert.equal(providerCalls, 1);
+  releaseProvider();
   await waitFor(async () => (await db.prepare("SELECT COUNT(*) AS n FROM product_price_summary WHERE status IN ('complete','unsupported')").first<{ n: number }>())!.n === 2);
-  const warm = await rpc('/summary', [ref(2), ref(1), ref(1)]);
+  const warm = await http([ref(2), ref(1), ref(1)]);
   assert.deepEqual(warm.data.map(p => p.providers.yahoo.status), ['unsupported', 'complete', 'complete']);
   assert.equal(warm.data[1].providers.yahoo.lowest_price, 57800);
   assert.equal(providerCalls, 1); assert.equal(catalogCalls, 4);
+  assert.equal((await db.prepare("SELECT day_count FROM work_budget WHERE name='queue'").first<{ day_count: number }>())!.day_count, 2);
   const twenty = Array.from({ length: 20 }, (_, i) => ref(i + 1));
   const lookup = await db.prepare(LOOKUP_SQL).bind(JSON.stringify(twenty)).all();
   assert.equal(lookup.results.length, 20);
@@ -115,8 +143,9 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
       now, now + 21600000, now, now + 21600000, now, now)));
   const warmLookup = await db.prepare(LOOKUP_SQL).bind(JSON.stringify(warmRefs)).all();
   assert.equal(warmLookup.meta.rows_written, 0); assert(warmLookup.meta.rows_read <= 50);
-  assert((await rpc('/summary', warmRefs)).data.every(p => p.providers.yahoo.status === 'complete'));
+  assert((await http(warmRefs)).data.every(p => p.providers.yahoo.status === 'complete'));
   assert.equal(providerCalls, 1);
+  assert.equal((await http(Array(101).fill(ref()), 400)).error?.code, 'INVALID_REQUEST');
   t.diagnostic(`D1 20 warm rows: rows_read=${warmLookup.meta.rows_read}, rows_written=${warmLookup.meta.rows_written}, statements=1`);
   assert.equal((await db.prepare("SELECT is_default FROM product_price_summary WHERE upstream_key='CPU/test-3000'").first<{ is_default: number }>())!.is_default, 1);
   assert.equal((await rpc('/sync', [])).ok, true);
@@ -135,5 +164,6 @@ test('workerd: real RPC, D1 migration, Queue consumer and Cron with mocked exter
   assert.equal((await rpc('/seed', Array.from({ length: 601 }, (_, i) => ref(i + 5000)))).data.registered, 601);
   assert.equal(providerCalls, 1);
   await db.prepare('DROP TABLE product_price_summary').run();
+  assert.deepEqual(await http([ref()], 503), { ok: false, error: { code: 'PRICING_UNAVAILABLE' } });
   assert.deepEqual(await rpc('/summary', [ref()]), { ok: false, error: { code: 'PRICING_UNAVAILABLE' } });
 });
